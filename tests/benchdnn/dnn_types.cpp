@@ -77,11 +77,6 @@ std::ostream &operator<<(std::ostream &s, dnnl_data_type_t dt) {
     return s;
 }
 
-std::ostream &operator<<(std::ostream &s, dnnl_engine_kind_t ek) {
-    s << engine_kind2str(ek);
-    return s;
-}
-
 dir_t str2dir(const char *str) {
 #define CASE(x) \
     if (!strcasecmp(STRINGIFY(x), str)) return x
@@ -129,142 +124,137 @@ const char *data_kind2str(data_kind_t kind) {
 }
 
 static const std::map<int, const char *> arg2str = {
-        {DNNL_ARG_SRC, "src"},
-        {DNNL_ARG_SRC_1, "src1"},
-        {DNNL_ARG_WEIGHTS, "wei"},
-        {DNNL_ARG_DST, "dst"},
+        {DNNL_ARG_SRC, "src:"},
+        {DNNL_ARG_SRC_1, "src1:"},
+        {DNNL_ARG_WEIGHTS, "wei:"},
+        {DNNL_ARG_DST, "dst:"},
 };
 
-#define DNNL_ARG_UNDEF 0
-static int str2arg(const std::string &str) {
-    for (const auto &arg : arg2str)
-        if (str.compare(arg.second) == 0) return arg.first;
-    return DNNL_ARG_UNDEF;
-}
-
-policy_t attr_t::str2policy(const std::string &str) {
-    std::string s(str);
-    // s.compare is lexicographical, case matters
-    std::transform(s.begin(), s.end(), s.begin(), ::toupper);
+policy_t attr_t::scale_t::str2policy(const char *str) {
 #define CASE(_plc) \
-    if (s.compare(STRINGIFY(_plc)) == 0) return _plc
+    if (!strcasecmp(STRINGIFY(_plc), str)) return _plc
     CASE(COMMON);
     CASE(PER_OC);
     CASE(PER_DIM_0);
     CASE(PER_DIM_1);
     CASE(PER_DIM_01);
 #undef CASE
-    assert(!"unknown attr_t::policy_t policy");
-    return POLICY_TOTAL;
+    assert(!"unknown attr::scale::policy");
+    return COMMON;
 }
 
-const char *attr_t::policy2str(policy_t policy) {
+const char *attr_t::scale_t::policy2str(policy_t policy) {
     if (policy == COMMON) return "common";
     if (policy == PER_OC) return "per_oc";
     if (policy == PER_DIM_0) return "per_dim_0";
     if (policy == PER_DIM_1) return "per_dim_1";
     if (policy == PER_DIM_01) return "per_dim_01";
-    assert(!"unknown attr_t::policy_t policy");
-    return "unknown attr_t::policy_t policy";
+    assert(!"unknown attr::scale::policy");
+    return "unknown attr::scale::policy";
 }
 
-int attr_t::get_default_mask(policy_t policy) {
-    switch (policy) {
-        case PER_DIM_0: return (1 << 0);
-        case PER_OC:
-        case PER_DIM_1: return (1 << 1);
-        case PER_DIM_01: return (1 << 0) + (1 << 1);
-        case COMMON: return 0;
-        default: SAFE_V(FAIL); return 0;
-    }
-}
+int attr_t::scale_t::from_str(const char *str, const char **end_s) {
+    if (str == NULL) return FAIL;
 
-// This function return substring by @start_pos and @delim and shifts @start_pos
-// to the place where @delim was found. Useful to parse peices of inputs
-// separated by @delim.
-std::string get_substr(
-        const std::string &s, size_t &start_pos, char delim = ':') {
-    auto end_pos = s.find_first_of(delim, start_pos);
-    auto sub = s.substr(start_pos, end_pos - start_pos);
-    start_pos = end_pos + (end_pos != std::string::npos);
-    return sub;
-}
+    *this = attr_t::scale_t();
 
-// This function takes input string, extracts float value and runtime, if
-// present, from the string. Updates @value and @runtime with extracted values.
-int parse_value_and_runtime(float &value, bool &runtime, const std::string &s) {
-    // process value
-    size_t scale_pos = 0;
-    value = std::stof(s, &scale_pos);
-    runtime = false;
-    if (scale_pos + 1 < s.size()) return FAIL;
-    if (scale_pos == s.size()) return OK;
-    if (s.back() != '*') return FAIL;
-    runtime = true;
-    return OK;
-}
+    const char *s_;
+    const char *&s = end_s ? *end_s : s_;
+    s = str;
 
-int attr_t::scale_t::from_str(const std::string &s) {
-    *this = scale_t();
-    if (s.empty()) return OK;
+    while (isalpha(*s)) {
+        for (policy_t p = COMMON; true; p = (policy_t)((int)p + 1)) {
+            if (p == POLICY_TOTAL) return FAIL;
 
-    size_t start_pos = 0;
-    // process policy
-    this->policy = str2policy(get_substr(s, start_pos));
-    if (this->policy == POLICY_TOTAL) return FAIL;
-    if (start_pos == std::string::npos) return OK;
-    if (start_pos >= s.size()) return FAIL; // to catch dangling ':'
+            const char *ps = policy2str(p);
+            if (!strncasecmp(ps, s, strlen(ps))) {
+                this->policy = p;
+                s += strlen(ps);
+                break;
+            }
+        }
 
-    int status = parse_value_and_runtime(
-            this->scale, this->runtime, get_substr(s, start_pos));
-    if (status != OK || this->scale < 0) return FAIL;
-    return OK;
-}
+        if (*s != ':') return OK;
+        s++;
 
-int attr_t::zero_points_t::from_str(const std::string &s) {
-    *this = zero_points_t();
-    if (s.empty()) return OK;
+        char *end;
+        this->scale = strtof(s, &end);
+        if (this->scale < 0 || end == s) return FAIL;
+        s = end;
 
-    size_t start_pos = 0;
-    while (start_pos != std::string::npos) {
-        auto arg = str2arg(get_substr(s, start_pos));
-        if (arg == DNNL_ARG_UNDEF || start_pos == std::string::npos
-                || start_pos >= s.size())
-            return FAIL;
+        if (*s == '*') {
+            ++s;
+            this->runtime = true;
+        }
 
-        auto policy = str2policy(get_substr(s, start_pos));
-        if (policy == POLICY_TOTAL || start_pos == std::string::npos
-                || start_pos >= s.size())
-            return FAIL;
-
-        float zp = 0;
-        bool runtime = false;
-        int status = parse_value_and_runtime(
-                zp, runtime, get_substr(s, start_pos, '_'));
-        if (status != OK) return status;
-
-        set(arg, policy, (int)zp, runtime); // XXX: overflow/underflow?
+        assert(*s == '\0' || *s == ';' || *s == '_');
     }
     return OK;
 }
 
-int attr_t::arg_scales_t::from_str(const std::string &s) {
-    *this = arg_scales_t();
-    if (s.empty()) return OK;
+int attr_t::zero_points_t::from_str(const char *str, const char **end_s) {
+    if (str == NULL) return FAIL;
 
-    size_t start_pos = 0;
-    while (start_pos != std::string::npos) {
-        auto arg = str2arg(get_substr(s, start_pos));
-        if (arg == DNNL_ARG_UNDEF || start_pos == std::string::npos
-                || start_pos >= s.size())
-            return FAIL;
+    *this = attr_t::zero_points_t();
 
-        auto policy_str = get_substr(s, start_pos);
-        auto scale_str = policy_str + ":" + get_substr(s, start_pos, '_');
-        scale_t arg_scale;
-        auto status = arg_scale.from_str(scale_str.c_str());
-        if (status != OK) return status;
-        set(arg, arg_scale);
+    const char *s_;
+    const char *&s = end_s ? *end_s : s_;
+    s = str;
+
+    while (isalpha(*s)) {
+        for (const auto &arg : arg2str) {
+            const size_t arg_name_len = strlen(arg.second);
+            if (!strncasecmp(arg.second, s, arg_name_len)) {
+                s += arg_name_len;
+                char *end = NULL;
+                int zero_point = (int)strtol(s, &end, 10);
+                bool runtime = false;
+                if (end == s) return FAIL;
+                s = end;
+                if (*s == '*') {
+                    runtime = true;
+                    ++s;
+                }
+                set(arg.first, {zero_point, runtime});
+            }
+        }
+
+        while (*s == '_')
+            ++s;
+    }
+
+    while (*s == '_')
+        ++s;
+    assert(*s == '\0' || *s == ';');
+
+    return OK;
+}
+
+int attr_t::arg_scales_t::from_str(const char *str, const char **end_s) {
+    if (str == NULL) return FAIL;
+
+    *this = attr_t::arg_scales_t();
+
+    const char *s_;
+    const char *&s = end_s ? *end_s : s_;
+    s = str;
+
+    while (*s != '\0' && *s != ';') {
+        const char *s_init_pos = s;
+        for (const auto &arg : arg2str) {
+            const size_t arg_name_len = strlen(arg.second);
+            if (!strncasecmp(arg.second, s, arg_name_len)) {
+                s += arg_name_len;
+                attr_t::scale_t arg_scale;
+                auto rc = arg_scale.from_str(s, &s);
+                if (rc != OK) return rc;
+                set(arg.first, arg_scale);
+                break;
+            }
+        }
+        if (s_init_pos == s) return FAIL;
+        while (*s == '_' || isspace(*s))
+            ++s;
     }
     return OK;
 }
@@ -323,14 +313,11 @@ static po_table_entry_t kind_table[] = {
         // guard entry
         {pk_t::KIND_TOTAL, "kind_undef", dnnl_alg_kind_undef}};
 
-pk_t attr_t::post_ops_t::str2kind(const std::string &str) {
-    std::string s(str);
-    // s.compare is lexicographical, case matters
-    std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+pk_t attr_t::post_ops_t::str2kind(const char *str) {
     for (const auto &e : kind_table) {
-        if (s.compare(e.kind_name) == 0) return e.kind;
+        if (!strcasecmp(e.kind_name, str)) return e.kind;
     }
-    assert(!"unknown attr_t::post_ops_t::kind_t kind");
+    assert(!"unknown attr::post_ops::kind");
     return kind_table[KIND_TOTAL].kind;
 }
 
@@ -350,59 +337,113 @@ dnnl_alg_kind_t attr_t::post_ops_t::kind2dnnl_kind(pk_t kind) {
     return kind_table[KIND_TOTAL].dnnl_kind;
 }
 
-int attr_t::post_ops_t::from_str(const std::string &s) {
+int attr_t::post_ops_t::from_str(const char *str, const char **end_s) {
+    if (str == NULL) return FAIL;
+
     *this = post_ops_t();
+
+    const char *s_;
+    const char *&s = end_s ? *end_s : s_;
+    s = str;
+
     // "'" is mandatory as long as ";" is used as alg delimiter
-    if (s.front() != '\'' || s.back() != '\'') return FAIL;
-    if (s.size() == 2) return OK; // empty input
+    if (*str != '\'') return FAIL;
+    ++s;
 
-    // strip quotes to simplify further logic
-    auto s_no_quotes = s.substr(1, s.size() - 2);
-
-    // operate over substrings separated by ';' represeting a single post op
-    // with further parsing of specific kind
-    size_t start_pos = 0;
-    while (start_pos != s_no_quotes.size() && start_pos != std::string::npos) {
-        auto subs = get_substr(s_no_quotes, start_pos, ';');
-        size_t subs_pos = 0;
-
-        auto kind = str2kind(get_substr(subs, subs_pos));
-        if (kind == KIND_TOTAL) return FAIL;
-
-        entry.emplace_back(kind);
-        if (subs_pos == std::string::npos) continue;
-        if (subs_pos >= subs.size()) return FAIL; // to catch dangling ':'
-
-        auto &e = entry.back();
-        if (e.is_sum_kind()) {
-            e.sum.scale = std::stof(get_substr(subs, subs_pos));
-            if (subs_pos == std::string::npos) continue;
-            if (subs_pos >= subs.size()) return FAIL; // to catch dangling ':'
-
-            e.sum.dt = str2dt(get_substr(subs, subs_pos).c_str());
-        } else if (e.is_convolution_kind()) {
-            e.convolution.dst_dt = str2dt(get_substr(subs, subs_pos).c_str());
-            if (subs_pos == std::string::npos) continue;
-            if (subs_pos >= subs.size()) return FAIL; // to catch dangling ':'
-
-            auto policy_str = get_substr(subs, subs_pos);
-            auto scale_str = policy_str + ":" + get_substr(subs, subs_pos);
-            auto status = e.convolution.oscale.from_str(scale_str.c_str());
-            if (status != OK) return status;
-        } else if (e.is_eltwise_kind()) {
-            e.eltwise.alpha = std::stof(get_substr(subs, subs_pos));
-            if (subs_pos == std::string::npos) continue;
-            if (subs_pos >= subs.size()) return FAIL; // to catch dangling ':'
-
-            e.eltwise.beta = std::stof(get_substr(subs, subs_pos));
-            if (subs_pos == std::string::npos) continue;
-            if (subs_pos >= subs.size()) return FAIL; // to catch dangling ':'
-
-            e.eltwise.scale = std::stof(get_substr(subs, subs_pos));
-            if (e.eltwise.scale <= 0) return FAIL;
+    for (;;) {
+        if (*s == '\'') {
+            ++s;
+            return OK;
         }
+        if (len == capacity) return FAIL;
+
+        for (const auto &table_entry : kind_table) {
+            const auto k = table_entry.kind;
+            if (k == KIND_TOTAL) return FAIL;
+
+            // extract full input kind from input string and compare full names
+            // to avoid situations when a substring of original name is a valid
+            // alg_kind too, like log and logistic, or relu and relu_dst.
+            std::string input(s);
+            // Parse until first of valid delimiters is met.
+            std::string input_kind(input, 0, input.find_first_of(":;\'"));
+            const char *ks = table_entry.kind_name;
+
+            if (input_kind.compare(ks) == 0) {
+                auto &e = entry[len];
+
+                e.kind = k;
+                s += strlen(ks);
+                if (k == SUM) {
+                    e.sum.scale = 1.f;
+                    e.sum.dt = dnnl_data_type_undef;
+                    if (*s == ':') {
+                        char *end;
+                        const char *end_dt;
+                        e.sum.scale = strtof(++s, &end);
+                        if (end == s) return FAIL;
+                        s = end;
+                        if (*s == ':') ++s;
+                        end_dt = s;
+                        while (*s && isalnum(*s))
+                            ++s;
+                        if (end_dt != s) {
+                            e.sum.dt = str2dt(
+                                    std::string(end_dt, s - end_dt).c_str());
+                        }
+                    }
+                } else if (e.is_convolution_kind()) {
+                    e.convolution.dst_dt = dnnl_f32;
+                    e.convolution.stride = k == DW_K3S1P1 ? 1 : 2;
+                    e.convolution.oscale = attr_t::scale_t();
+
+                    if (*s == ':') ++s;
+                    auto *end = s;
+                    while (*s && isalnum(*s))
+                        ++s;
+                    if (end != s) {
+                        e.convolution.dst_dt
+                                = str2dt(std::string(end, s - end).c_str());
+                        if (*s == ':') {
+                            ++s;
+                            attr_t::scale_t oscale;
+                            auto rc = oscale.from_str(s, &s);
+                            if (rc != OK) return rc;
+                            e.convolution.oscale = oscale;
+                        }
+                    }
+                } else if (e.is_eltwise_kind()) {
+                    e.eltwise.alg = kind2dnnl_kind(k);
+                    e.eltwise.scale = 1.f;
+                    e.eltwise.alpha = e.eltwise.beta = 0.f;
+
+                    for (int i = 0; i < 3; ++i) {
+                        // :alpha:beta:scale
+                        float &val = i == 0
+                                ? e.eltwise.alpha
+                                : i == 1 ? e.eltwise.beta : e.eltwise.scale;
+                        if (*s == ':') {
+                            char *end;
+                            val = strtof(++s, &end);
+                            if (end == s) return FAIL;
+                            s = end;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if (e.eltwise.scale <= 0) return FAIL;
+                }
+
+                break;
+            }
+        }
+        ++len;
+
+        if (*s == ';') ++s;
     }
-    return OK;
+
+    return FAIL; /* unreachable */
 }
 
 bool attr_t::is_def() const {
@@ -411,81 +452,76 @@ bool attr_t::is_def() const {
 }
 
 int attr_t::post_ops_t::find(pk_t kind, int start, int stop) const {
-    if (stop == -1) stop = len();
-    stop = MIN2(stop, len());
+    if (stop == -1) stop = len;
+    stop = MIN2(stop, len);
     for (int idx = start; idx < stop; ++idx)
         if (entry[idx].kind == kind) return idx;
     return -1;
 }
 
-bool attr_t::post_ops_t::entry_t::is_sum_kind() const {
-    return kind == SUM;
-}
-bool attr_t::post_ops_t::entry_t::is_convolution_kind() const {
-    return kind == DW_K3S1P1 || kind == DW_K3S2P1;
-}
 bool attr_t::post_ops_t::entry_t::is_eltwise_kind() const {
-    return kind > ELTWISE_START && kind < ELTWISE_END;
+    return kind > pk_t::ELTWISE_START && kind < pk_t::ELTWISE_END;
 }
 
 int attr_t::post_ops_t::eltwise_index() const {
-    for (int i = 0; i < len(); ++i) {
-        if (entry[i].is_eltwise_kind()) return i;
+    for (int i = 0; i < len; ++i) {
+        if (attr_t::post_ops_t::entry[i].is_eltwise_kind()) return i;
     }
     return -1;
 }
 
+bool attr_t::post_ops_t::entry_t::is_convolution_kind() const {
+    return kind == pk_t::DW_K3S1P1 || kind == pk_t::DW_K3S2P1;
+}
+
 int attr_t::post_ops_t::convolution_index() const {
-    for (int i = 0; i < len(); ++i) {
-        if (entry[i].is_convolution_kind()) return i;
+    for (int i = 0; i < len; ++i) {
+        if (attr_t::post_ops_t::entry[i].is_convolution_kind()) return i;
     }
     return -1;
 }
 
 int str2attr(attr_t *attr, const char *str) {
     if (attr == NULL || str == NULL) return FAIL;
-
     *attr = attr_t();
-    std::string s(str), entry_name;
-    size_t start_pos = 0, end_pos = start_pos;
 
-    entry_name = "oscale=";
-    start_pos = s.find(entry_name);
-    if (start_pos != std::string::npos) {
-        start_pos += entry_name.size();
-        // ';' is an attribute delimeter
-        auto status = attr->oscale.from_str(get_substr(s, start_pos, ';'));
-        if (status != OK) return status;
+    const char *s = str;
+
+    while (*s != '\0') {
+        int rc = FAIL;
+        const char *param;
+
+        param = "oscale=";
+        if (!strncasecmp(param, s, strlen(param))) {
+            s += strlen(param);
+            rc = attr->oscale.from_str(s, &s);
+            if (rc != OK) return rc;
+        }
+
+        param = "zero_points=";
+        if (!strncasecmp(param, s, strlen(param))) {
+            s += strlen(param);
+            rc = attr->zero_points.from_str(s, &s);
+            if (rc != OK) return rc;
+        }
+
+        param = "post_ops=";
+        if (!strncasecmp(param, s, strlen(param))) {
+            s += strlen(param);
+            rc = attr->post_ops.from_str(s, &s);
+            if (rc != OK) return rc;
+        }
+
+        param = "scales=";
+        if (!strncasecmp(param, s, strlen(param))) {
+            s += strlen(param);
+            rc = attr->scales.from_str(s, &s);
+            if (rc != OK) return rc;
+        }
+
+        if (rc != OK) return rc;
+        if (*s == ';') ++s;
     }
-
-    entry_name = "zero_points=";
-    start_pos = s.find(entry_name);
-    if (start_pos != std::string::npos) {
-        start_pos += entry_name.size();
-        auto status = attr->zero_points.from_str(get_substr(s, start_pos, ';'));
-        if (status != OK) return status;
-    }
-
-    entry_name = "scales=";
-    start_pos = s.find(entry_name);
-    if (start_pos != std::string::npos) {
-        start_pos += entry_name.size();
-        auto status = attr->scales.from_str(get_substr(s, start_pos, ';'));
-        if (status != OK) return status;
-    }
-
-    entry_name = "post_ops=";
-    start_pos = s.find(entry_name);
-    if (start_pos != std::string::npos) {
-        start_pos += entry_name.size();
-        // "\'\'" separates post-ops from everything else
-        end_pos = s.find_first_of('\'', s.find_first_of('\'', start_pos) + 1);
-        // +1 to include '\'' as an essential part of post-ops
-        auto parse_str = s.substr(start_pos, end_pos - start_pos + 1);
-        auto status = attr->post_ops.from_str(parse_str);
-        if (status != OK) return status;
-    }
-
     return OK;
 }
 
@@ -504,7 +540,7 @@ void handle_legacy_attr(attr_t &attr, const attr_t &legacy_attr) {
 }
 
 std::ostream &operator<<(std::ostream &s, const policy_t &policy) {
-    s << attr_t::policy2str(policy);
+    s << attr_t::scale_t::policy2str(policy);
     return s;
 }
 
@@ -521,8 +557,7 @@ std::ostream &operator<<(
         if (!first) s << '_';
         first = false;
 
-        s << arg2str.at(point.first) << ":" << point.second.policy << ":"
-          << point.second.value;
+        s << arg2str.at(point.first) << point.second.value;
         if (point.second.runtime) s << '*';
     }
 
@@ -530,13 +565,12 @@ std::ostream &operator<<(
 }
 
 std::ostream &operator<<(std::ostream &s, const attr_t::arg_scales_t &scales) {
-    bool first = true;
+    const char *delim = "";
     for (const auto &v : scales.scales) {
         if (!v.second.is_def()) {
-            if (!first) s << '_';
-            first = false;
-
-            s << arg2str.at(v.first) << ":" << v.second;
+            s << delim << arg2str.at(v.first) << v.second.policy << ":"
+              << v.second.scale;
+            delim = "_";
         }
     }
     return s;
@@ -550,13 +584,13 @@ std::ostream &operator<<(std::ostream &s, const attr_t::post_ops_t::kind_t &k) {
 std::ostream &operator<<(std::ostream &s, const attr_t::post_ops_t &post_ops) {
     s << "'";
 
-    for (int idx = 0; idx < post_ops.len(); ++idx) {
+    for (int idx = 0; idx < post_ops.len; ++idx) {
         if (idx > 0) s << ";";
 
         const auto &e = post_ops.entry[idx];
         s << e.kind;
 
-        if (e.is_sum_kind()) {
+        if (e.kind == pk_t::SUM) {
             if (e.sum.scale != 1.0f || e.sum.dt != dnnl_data_type_undef)
                 s << ":" << e.sum.scale;
             if (e.sum.dt != dnnl_data_type_undef) s << ":" << e.sum.dt;
@@ -597,19 +631,13 @@ std::ostream &operator<<(std::ostream &s, const attr_t &attr) {
 }
 
 std::ostream &dump_global_params(std::ostream &s) {
-    s << "--" << driver_name << " ";
-    if (canonical) s << "--canonical=" << bool2str(canonical) << " ";
     if (canonical || engine_tgt_kind != dnnl_cpu)
-        s << "--engine=" << engine_tgt_kind << " ";
+        s << "--engine=" << engine_kind2str(engine_tgt_kind) << " ";
     if (canonical || scratchpad_mode != dnnl_scratchpad_mode_library)
         s << "--attr-scratchpad=" << scratchpad_mode2str(scratchpad_mode)
           << " ";
-    if (canonical || fast_ref_gpu != true)
-        s << "--fast-ref-gpu=" << bool2str(fast_ref_gpu) << " ";
-    if (!skip_impl.empty()) s << "--skip-impl=" << skip_impl << " ";
-    if (canonical || mem_check != true)
-        s << "--mem-check=" << bool2str(mem_check) << " ";
 
+    s << "--" << driver_name << " ";
     return s;
 }
 
@@ -695,26 +723,20 @@ dnnl_primitive_attr_t create_dnnl_attr(const attr_t &attr, int64_t scale_cnt,
 
     if (!attr.zero_points.is_def()) {
         for (const auto &zero_points : attr.zero_points) {
-            const bool runtime = zero_points.second.runtime;
-            const auto mask = zero_points.second.policy == policy_t::PER_DIM_1
-                    ? 1 << 1
-                    : 0;
-            SAFE_V((runtime == true || mask == 0) ? OK : FAIL);
-
             DNN_SAFE_V(dnnl_primitive_attr_set_zero_points(dnnl_attr,
-                    zero_points.first, /* count */ 1, mask,
-                    runtime ? &DNNL_RUNTIME_S32_VAL
-                            : &zero_points.second.value));
+                    zero_points.first,
+                    /* count */ 1, /* mask */ 0,
+                    zero_points.second.runtime ? &DNNL_RUNTIME_S32_VAL
+                                               : &zero_points.second.value));
         }
     }
 
     if (!attr.post_ops.is_def()) {
-        const auto &po = attr.post_ops;
         dnnl_post_ops_t ops;
         DNN_SAFE_V(dnnl_post_ops_create(&ops));
-        for (int idx = 0; idx < po.len(); ++idx) {
-            const auto &e = po.entry[idx];
-            if (e.is_sum_kind()) {
+        for (int idx = 0; idx < attr.post_ops.len; ++idx) {
+            const auto &e = attr.post_ops.entry[idx];
+            if (e.kind == pk_t::SUM) {
                 DNN_SAFE_V(dnnl_post_ops_append_sum_v2(
                         ops, e.sum.scale, e.sum.dt));
             } else if (e.is_eltwise_kind()) {
@@ -728,7 +750,7 @@ dnnl_primitive_attr_t create_dnnl_attr(const attr_t &attr, int64_t scale_cnt,
 
         const_dnnl_post_ops_t c_ops;
         DNN_SAFE_V(dnnl_primitive_attr_get_post_ops(dnnl_attr, &c_ops));
-        SAFE_V(dnnl_post_ops_len(c_ops) == po.len() ? OK : FAIL);
+        SAFE_V(dnnl_post_ops_len(c_ops) == attr.post_ops.len ? OK : FAIL);
 
         DNN_SAFE_V(dnnl_post_ops_destroy(ops));
     }
@@ -849,17 +871,6 @@ void maybe_oscale(const attr_t &attr, float &d, float *scales, int64_t oc) {
     }
 }
 
-void maybe_zero_point(const attr_t &attr, float &d, const int32_t *zero_points,
-        int64_t c, int arg, bool opposite_zero_point) {
-    const auto &e = attr.zero_points.get(arg);
-
-    if (!attr.zero_points.is_def(arg)) {
-        const int idx = e.policy == policy_t::COMMON ? 0 : c;
-        const int zp_sign = opposite_zero_point ? -1 : 1;
-        d -= zp_sign * zero_points[idx];
-    }
-}
-
 float compute_eltwise_fwd(
         pk_t kind, float src, float scale, float alpha, float beta) {
     using namespace dnnl::impl::math;
@@ -949,11 +960,11 @@ float compute_binary(pk_t kind, float src0, float src1) {
 void maybe_post_ops(const attr_t &attr, float &val, float sum_val) {
     using namespace dnnl::impl::math;
 
-    const auto &po = attr.post_ops;
-    for (int idx = 0; idx < po.len(); ++idx) {
-        const auto &e = po.entry[idx];
+    const auto &ops = attr.post_ops;
+    for (int idx = 0; idx < ops.len; ++idx) {
+        const auto &e = ops.entry[idx];
 
-        if (e.is_sum_kind()) {
+        if (e.kind == pk_t::SUM) {
             val += e.sum.scale * sum_val;
         } else if (e.is_convolution_kind()) {
             continue;
@@ -995,5 +1006,3 @@ stream_t::stream_t(dnnl_engine_t engine) {
 stream_t::~stream_t() {
     DNN_SAFE_V(dnnl_stream_destroy(stream_));
 }
-
-#undef DNNL_ARG_UNDEF

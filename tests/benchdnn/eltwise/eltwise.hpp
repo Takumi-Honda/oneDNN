@@ -50,10 +50,8 @@ struct settings_t {
     std::vector<bool> inplace {false};
 
     const char *perf_template_csv
-            = "perf,%engine%,%impl%,%dir%,%dt%,%tag%,%alg%,%DESC%,%-time%,%"
-              "0time%";
-    const char *perf_template_def
-            = "perf,%engine%,%impl%,%prb%,%-time%,%0time%";
+            = "perf,%engine%,%dir%,%dt%,%tag%,%alg%,%DESC%,%-time%,%0time%";
+    const char *perf_template_def = "perf,%engine%,%prb%,%-time%,%0time%";
     const char *perf_template = perf_template_def;
 
     void reset() { *this = settings_t(perf_template); }
@@ -98,7 +96,6 @@ struct perf_report_t : public base_perf_report_t {
 
     void report(const prb_t *p, const res_t *r, const char *prb_str) {
         p_ = p;
-        tag_ = fmt_tag2str(convert_tag(p_->tag, p_->ndims));
         base_report(r, prb_str);
     }
 
@@ -110,11 +107,10 @@ struct perf_report_t : public base_perf_report_t {
 
     const dir_t *dir() const override { return &p_->dir; }
     const dnnl_data_type_t *dt() const override { return &p_->dt; }
-    const std::string *tag() const override { return &tag_; }
+    const std::string *tag() const override { return &p_->tag; }
 
 private:
     const prb_t *p_ = NULL;
-    std::string tag_;
 };
 
 bool check_extreme_values(const float &a, const float &b, alg_t alg);

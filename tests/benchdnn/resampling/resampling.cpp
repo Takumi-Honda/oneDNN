@@ -34,8 +34,7 @@ namespace resampling {
 inline int compare_dat(const prb_t *p, data_kind_t kind, dnn_mem_t &mem_dt,
         dnn_mem_t &mem_fp, res_t *r) {
     const auto nelems = mem_dt.nelems();
-    if (nelems == 0) return r->state = PASSED, OK;
-
+    r->errors = 0;
     r->total = nelems;
 
     float trh = 0;
@@ -59,7 +58,7 @@ inline int compare_dat(const prb_t *p, data_kind_t kind, dnn_mem_t &mem_dt,
     for (int64_t i = 0; i < nelems; ++i) {
         const float dt = mem_dt.get_elem(i);
         const float fp0 = mem_fp.get_elem(i);
-        const float fp = round_to_nearest_representable(p->dt, fp0);
+        const float fp = maybe_saturate(p->dt, fp0);
 
         const float diff = fabsf(fp - dt);
         const float rel_diff = diff / (fabsf(fp) > FLT_MIN ? fabsf(fp) : 1);
@@ -67,9 +66,8 @@ inline int compare_dat(const prb_t *p, data_kind_t kind, dnn_mem_t &mem_dt,
 
         r->errors += !ok;
 
-        const bool dump = (!ok && (r->errors < 10 || verbose >= 10))
-                || (verbose >= 50 && i < 30) || (verbose >= 99);
-        if (dump) {
+        if ((!ok && (r->errors < 10 || verbose >= 10))
+                || (verbose >= 50 && i < 30)) {
             int64_t mb = 0, ic = 0, d = 0, h = 0, w = 0;
             switch (kind) {
                 case SRC: inv_src_off_f(p, i, mb, ic, d, h, w); break;
@@ -112,7 +110,7 @@ int fill_dat(const prb_t *p, data_kind_t kind, dnn_mem_t &mem_dt,
         const float value = (dt == dnnl_f32)
                 ? (f_min + gen) * (1.0f + 4.0f / range)
                 : (f_min + gen) / range;
-        mem_fp.set_elem(i, round_to_nearest_representable(dt, value));
+        mem_fp.set_elem(i, maybe_saturate(dt, value));
     });
 
     SAFE(mem_dt.reorder(mem_fp), WARN);
@@ -220,7 +218,7 @@ static int init_pd(dnnl_engine_t engine, const prb_t *p,
 }
 
 void check_known_skipped_case(const prb_t *p, res_t *r) {
-    check_known_skipped_case_common({p->dt}, p->dir, r);
+    check_known_skipped_case_common({p->dt}, r);
 }
 
 int doit(const prb_t *p, res_t *r) {

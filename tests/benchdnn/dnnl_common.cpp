@@ -181,8 +181,8 @@ void maybe_prepare_runtime_scales(dnn_mem_t &scales_m, const attr_t &attr,
         int64_t scale_cnt, const float *scales) {
     if (!attr.oscale.runtime) return;
 
-    const int64_t count
-            = attr.oscale.policy == policy_t::COMMON ? 1 : scale_cnt;
+    using P = attr_t::scale_t::policy_t;
+    const int64_t count = attr.oscale.policy == P::COMMON ? 1 : scale_cnt;
 
     scales_m = dnn_mem_t(1, &count, dnnl_f32, dnnl_a, get_test_engine());
     for (int64_t c = 0; c < count; ++c)
@@ -195,23 +195,13 @@ void maybe_prepare_runtime_scales(
             (int64_t)attr_bundle.oscale.size(), attr_bundle.oscale.data());
 }
 
-void maybe_prepare_runtime_zero_points(dnn_mem_t &zero_points_m,
-        const attr_t &attr, int arg, int64_t count,
-        const int32_t *zero_points) {
-    if (!attr.zero_points.runtime(arg)) return;
-
-    const auto e = attr.zero_points.get(arg);
-    const int64_t cnt = e.policy == policy_t::COMMON ? 1 : count;
-
-    zero_points_m = dnn_mem_t(1, &cnt, dnnl_s32, dnnl_a, get_test_engine());
-    for (int64_t c = 0; c < cnt; ++c)
-        ((int32_t *)zero_points_m)[c] = zero_points[c];
-}
-
 void maybe_prepare_runtime_zero_points(
         dnn_mem_t &zero_points_m, const attr_t &attr, int arg) {
-    const auto e = attr.zero_points.get(arg);
-    maybe_prepare_runtime_zero_points(zero_points_m, attr, arg, 1, &(e.value));
+    if (!attr.zero_points.runtime(arg)) return;
+
+    int64_t count = 1;
+    zero_points_m = dnn_mem_t(1, &count, dnnl_s32, dnnl_a, get_test_engine());
+    ((int *)zero_points_m)[0] = attr.zero_points[arg];
 }
 
 bool check_md_consistency_with_tag(
@@ -224,28 +214,21 @@ bool check_md_consistency_with_tag(
 }
 
 void check_known_skipped_case_common(
-        const std::vector<dnnl_data_type_t> &v_dt, dir_t dir, res_t *r) {
+        const std::vector<dnnl_data_type_t> &v_dt, res_t *r) {
     static auto isa = dnnl_get_effective_cpu_isa();
-    const bool has_bf16_support
-            = (engine_tgt_kind == dnnl_cpu && isa >= dnnl_cpu_isa_avx512_core)
-            || engine_tgt_kind == dnnl_gpu;
-
     // rely on dnnl_cpu_isa_t enum order where AVX512_MIC < AVX512_CORE
     for (const auto &i_dt : v_dt) {
         // bf16 is supported on AVX512-CORE+
-        if (!has_bf16_support && i_dt == dnnl_bf16) {
+        if ((engine_tgt_kind == dnnl_cpu && isa < dnnl_cpu_isa_avx512_core)
+                && i_dt == dnnl_bf16) {
             r->state = SKIPPED, r->reason = DATA_TYPE_NOT_SUPPORTED;
             break;
         }
         // f16 is supported on GPU only
-        if (i_dt == dnnl_f16 && engine_tgt_kind != dnnl_gpu) {
-            r->state = SKIPPED, r->reason = DATA_TYPE_NOT_SUPPORTED;
-            break;
-        }
-        // f16 is supported for inference only
-        if (i_dt == dnnl_f16 && (dir & FLAG_BWD)) {
+        if (engine_tgt_kind != dnnl_gpu && i_dt == dnnl_f16) {
             r->state = SKIPPED, r->reason = DATA_TYPE_NOT_SUPPORTED;
             break;
         }
     }
+    if (r->state == SKIPPED) return;
 }

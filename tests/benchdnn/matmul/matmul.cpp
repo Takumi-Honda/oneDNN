@@ -84,12 +84,7 @@ static int init_pd(dnnl_engine_t engine, const prb_t *p,
                                                     : dnnl_unimplemented,
             CRIT);
 
-    // Overload PER_OC mask definition for batched case
-    int mask = 0;
-    if (p->attr.oscale.policy == policy_t::PER_OC)
-        mask = p->ndims == 3 ? 1 << 2 : 1 << 1;
-
-    auto dnnl_attr = create_dnnl_attr(p->attr, p->n, mask, p->scales);
+    auto dnnl_attr = create_dnnl_attr(p->attr, p->n, p->scales);
 
     dnnl_status_t init_status = dnnl_success;
     init_status
@@ -117,17 +112,16 @@ static int init_pd(dnnl_engine_t engine, const prb_t *p,
 int compare_dat(const prb_t *p, data_kind_t kind, dnn_mem_t &mem_dt,
         dnn_mem_t &mem_fp, res_t *r) {
     const auto nelems = mem_dt.nelems();
-    if (nelems == 0) return r->state = PASSED, OK;
-
-    r->total = nelems;
-
     int64_t non_zero = 0;
     const char *skind = data_kind2str(kind);
+
+    r->errors = 0;
+    r->total = nelems;
 
     for (int64_t i = 0; i < nelems; ++i) {
         const float dt = mem_dt.get_elem(i);
         const float fp0 = mem_fp.get_elem(i);
-        const float fp = round_to_nearest_representable(p->cfg[kind].dt, fp0);
+        const float fp = maybe_saturate(p->cfg[kind].dt, fp0);
 
         const float diff = fabsf(fp - dt);
         const float rel_diff = diff / (fabsf(fp) > FLT_MIN ? fabsf(fp) : 1);
@@ -334,7 +328,6 @@ int doit(const prb_t *p, res_t *r) {
                          &bia_md, p->ndims, bia_dims.data(), p->bia_dt, NULL),
                 WARN);
     }
-
     const auto &scratchpad_md = q(DNNL_ARG_SCRATCHPAD);
 
     const auto &test_engine = get_test_engine();

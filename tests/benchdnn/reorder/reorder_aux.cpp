@@ -36,9 +36,7 @@ const char *alg2str(alg_t alg) {
 }
 
 flag_t str2flag(const char *str) {
-    if (!strcasecmp("none", str))
-        return FLAG_NONE;
-    else if (!strcasecmp("conv_s8s8", str))
+    if (!strcasecmp("conv_s8s8", str))
         return FLAG_CONV_S8S8;
     else if (!strcasecmp("gconv_s8s8", str))
         return FLAG_GCONV_S8S8;
@@ -48,27 +46,10 @@ flag_t str2flag(const char *str) {
 
 const char *flag2str(flag_t flag) {
     switch (flag) {
-        case FLAG_NONE: return "none";
+        case FLAG_NONE: return "";
         case FLAG_CONV_S8S8: return "conv_s8s8";
         case FLAG_GCONV_S8S8: return "gconv_s8s8";
-        default: assert(!"Invalid flag"); return "none";
-    }
-}
-
-cross_engine_t str2cross_engine(const char *str) {
-    if (!strcasecmp("none", str)) return NONE;
-    if (!strcasecmp("cpu2gpu", str)) return CPU2GPU;
-    if (!strcasecmp("gpu2cpu", str)) return GPU2CPU;
-    assert(!"unknown cross engine");
-    return NONE;
-}
-
-const char *cross_engine2str(cross_engine_t cross_engine) {
-    switch (cross_engine) {
-        case NONE: return "none";
-        case CPU2GPU: return "cpu2gpu";
-        case GPU2CPU: return "gpu2cpu";
-        default: assert(!"unknown cross engine"); return "unknown cross engine";
+        default: assert(!"Invalid flag"); return "";
     }
 }
 
@@ -85,8 +66,6 @@ std::ostream &operator<<(std::ostream &s, const prb_t &p) {
         s << "--alg=" << alg2str(p.alg) << " ";
     if (canonical || p.oflag != def.oflag[0])
         s << "--oflag=" << flag2str(p.oflag) << " ";
-    if (canonical || p.cross_engine != def.cross_engine[0])
-        s << "--cross-engine=" << cross_engine2str(p.cross_engine) << " ";
     if (canonical || p.runtime_dim_mask != def.runtime_dim_mask[0])
         s << "--runtime-dim-mask=" << p.runtime_dim_mask << " ";
 

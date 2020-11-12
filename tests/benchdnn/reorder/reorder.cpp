@@ -29,7 +29,7 @@ namespace reorder {
 
 // prepare the output scales and mask
 int prepare_attr_bundle(const prb_t *p, attr_bundle_t &attr_bundle) {
-    const int mask = attr_t::get_default_mask(p->attr.oscale.policy);
+    const int mask = attr_t::scale_t::get_default_mask(p->attr.oscale.policy);
 
     int64_t uniq_scales = 1;
     for (int d = 0; d < p->ndims; ++d)
@@ -66,7 +66,7 @@ int fill_memory(const prb_t *p, data_kind_t kind, dnn_mem_t &mem,
         };
 
         const int rng = kind == SRC ? (idx % 7) : ((idx * 8 / 7) % 7);
-        mem.set_elem(idx, round_to_nearest_representable(dt, gen[rng]));
+        mem.set_elem(idx, maybe_saturate(dt, gen[rng]));
     }
 
     return OK;
@@ -75,7 +75,8 @@ int fill_memory(const prb_t *p, data_kind_t kind, dnn_mem_t &mem,
 int fill_memory_extra(const prb_t *p, dnnl_memory_extra_desc_t &extra) {
     extra.flags = dnnl_memory_extra_flag_none;
 
-    if (p->is_reorder_with_compensation()) {
+    if (p->alg == ALG_BOOT
+            && (p->oflag == FLAG_CONV_S8S8 || p->oflag == FLAG_GCONV_S8S8)) {
         int with_groups = p->oflag == FLAG_GCONV_S8S8 ? 1 : 0;
         extra.flags = dnnl_memory_extra_flag_compensation_conv_s8s8;
         extra.compensation_mask = (1 << 0) + with_groups * (1 << 1);
@@ -107,9 +108,9 @@ int ref_reorder(const prb_t *p, dnn_mem_t &dst, const dnn_mem_t &src,
 
         const int64_t scale_idx = dst.get_scale_idx(idx, scale_mask);
         const float alpha = attr_bundle.oscale[scale_idx];
-        const float value = alpha * s + beta * d + dst_zero_point;
 
-        dst.set_elem(idx, round_to_nearest_representable(dst_dt, value));
+        dst.set_elem(idx,
+                maybe_saturate(dst_dt, alpha * s + beta * d + dst_zero_point));
     }
 
     return OK;
@@ -119,8 +120,6 @@ int compare_bootstrap(dnn_mem_t &mem_ref, dnn_mem_t &mem_got, res_t *r) {
     bool ok = false;
     // demand bit-wise identical results
     const auto size_ref = mem_ref.size();
-    if (size_ref == 0) return r->state = PASSED, OK;
-
     if (size_ref == mem_got.size())
         ok = !memcmp((void *)mem_ref, (void *)mem_got, size_ref);
 
@@ -134,10 +133,8 @@ int compare_bootstrap(dnn_mem_t &mem_ref, dnn_mem_t &mem_got, res_t *r) {
 static int compare(const prb_t *p, const dnn_mem_t &mem_ref,
         const dnn_mem_t &mem_got, const attr_bundle_t &attr_bundle, res_t *r) {
     const auto nelems = mem_got.nelems();
-    if (nelems == 0) return r->state = PASSED, OK;
-
+    r->errors = 0;
     r->total = nelems;
-
     int64_t inf_p = 0, inf_n = 0, zeros = 0, reg = 0;
 
     const auto dt_out = mem_ref.dt();
@@ -247,17 +244,8 @@ static int init_pd_custom(dnnl_engine_t engine, const prb_t *p,
     fill_memory_extra(p, dst_md_extra);
     dst_d.extra = dst_md_extra;
 
-    dnnl_engine_t src_engine = engine, dst_engine = engine;
-    if (engine_tgt_kind == dnnl_gpu) {
-        switch (p->cross_engine) {
-            case CPU2GPU: src_engine = get_cpu_engine(); break;
-            case GPU2CPU: dst_engine = get_cpu_engine(); break;
-            default: break;
-        }
-    }
-
-    dnnl_status_t init_status = dnnl_reorder_primitive_desc_create(&rpd, &src_d,
-            src_engine, &dst_d, dst_engine, attr_bundle.dnnl_attr());
+    dnnl_status_t init_status = dnnl_reorder_primitive_desc_create(
+            &rpd, &src_d, engine, &dst_d, engine, attr_bundle.dnnl_attr());
     if (init_status == dnnl_unimplemented) return r->state = UNIMPLEMENTED, OK;
     SAFE(init_status, WARN);
 
@@ -268,45 +256,7 @@ static int init_pd_custom(dnnl_engine_t engine, const prb_t *p,
 }
 
 void check_known_skipped_case(const prb_t *p, res_t *r) {
-    const auto sdt = p->conf_in->dt;
-    const auto ddt = p->conf_out->dt;
-    check_known_skipped_case_common({sdt, ddt}, FWD_D, r);
-    if (r->state == SKIPPED) return;
-
-    // zero points for dst do not support sum by design
-    if (!p->attr.zero_points.is_def(DNNL_ARG_DST)
-            && p->attr.post_ops.find(attr_t::post_ops_t::kind_t::SUM) != -1) {
-        r->state = SKIPPED, r->reason = CASE_NOT_SUPPORTED;
-        return;
-    }
-
-    if (p->is_reorder_with_compensation()) {
-        // compensation is supported for dst_dt = s8 so far
-        // compensation does not support any attributes or runtime dims
-        if (ddt != dnnl_s8 || !p->attr.is_def() || p->runtime_dim_mask != 0) {
-            r->state = SKIPPED, r->reason = CASE_NOT_SUPPORTED;
-            return;
-        }
-    }
-
-    // bf16 reorder on cpu supports only bf16/f32 src_dt/dst_dt
-    if (engine_tgt_kind == dnnl_cpu
-            && (!IMPLICATION(
-                        sdt == dnnl_bf16, ddt == dnnl_f32 || ddt == dnnl_bf16)
-                    || !IMPLICATION(ddt == dnnl_bf16,
-                            sdt == dnnl_f32 || sdt == dnnl_bf16))) {
-        r->state = SKIPPED, r->reason = CASE_NOT_SUPPORTED;
-        return;
-    }
-
-    if (engine_tgt_kind == dnnl_gpu) {
-        // GPU does not support run-time dims and zero-points
-        if (p->runtime_dim_mask != 0 || !p->attr.zero_points.is_def()
-                || p->attr.oscale.runtime) {
-            r->state = SKIPPED, r->reason = CASE_NOT_SUPPORTED;
-            return;
-        }
-    }
+    check_known_skipped_case_common({p->conf_in->dt, p->conf_out->dt}, r);
 }
 
 int doit(const prb_t *p, res_t *r) {
@@ -392,21 +342,14 @@ int doit(const prb_t *p, res_t *r) {
     const auto src_dt = src_md.data_type;
     const auto dst_dt = dst_md.data_type;
 
-    dnnl_engine_t src_engine, dst_engine;
-    DNN_SAFE(dnnl_primitive_desc_query(
-                     const_pd, dnnl_query_reorder_src_engine, 0, &src_engine),
-            WARN);
-    DNN_SAFE(dnnl_primitive_desc_query(
-                     const_pd, dnnl_query_reorder_dst_engine, 0, &dst_engine),
-            WARN);
+    const auto &test_engine = get_test_engine();
 
-    dnn_mem_t src_dt_in_fmt_ref(src_md, src_dt, tag, src_engine);
-    dnn_mem_t src_dt_in_fmt_in(src_md, src_engine);
+    dnn_mem_t src_dt_in_fmt_ref(src_md, src_dt, tag, test_engine);
+    dnn_mem_t src_dt_in_fmt_in(src_md, test_engine);
 
-    dnn_mem_t scratchpad_dt(scratchpad_md, src_engine);
-
-    dnn_mem_t dst_dt_out_fmt_ref(dst_md, dst_dt, tag, dst_engine);
-    dnn_mem_t dst_dt_out_fmt_out(dst_md, dst_engine);
+    dnn_mem_t dst_dt_out_fmt_ref(dst_md, dst_dt, tag, test_engine);
+    dnn_mem_t dst_dt_out_fmt_out(dst_md, test_engine);
+    dnn_mem_t scratchpad_dt(scratchpad_md, test_engine);
 
     /* Step 4: fill input memory */
     SAFE(fill_memory(p, SRC, src_dt_in_fmt_ref, attr_bundle), WARN);
@@ -438,7 +381,7 @@ int doit(const prb_t *p, res_t *r) {
 
     /* Step 6: check correctness */
     if (bench_mode & CORR) {
-        if (p->is_reorder_with_compensation()) {
+        if (p->alg == ALG_BOOT) {
             /* "bootstrap" algorithm: compare to another oneDNN reorder. use
              * this when benchdnn does not know about all details of the data
              * layout, as is the case for compensated weights formats. */
@@ -446,7 +389,7 @@ int doit(const prb_t *p, res_t *r) {
             /* Step 5a: oneDNN reorder from ref format to output format */
             dnnl_memory_extra_desc_t dst_extra {};
             fill_memory_extra(p, dst_extra);
-            dnn_mem_t ref_dst_dt_out_fmt_out(dst_md, dst_engine);
+            dnn_mem_t ref_dst_dt_out_fmt_out(dst_md, test_engine);
             ref_dst_dt_out_fmt_out.md_.extra = dst_extra;
 
             SAFE(ref_dst_dt_out_fmt_out.reorder(src_dt_in_fmt_ref, attr_bundle),
@@ -465,7 +408,7 @@ int doit(const prb_t *p, res_t *r) {
                     WARN);
 
             /* Step 5c: compare benchdnn and oneDNN output */
-            dnn_mem_t dst_dt_out(dst_md, dst_dt, tag, dst_engine);
+            dnn_mem_t dst_dt_out(dst_md, dst_dt, tag, test_engine);
             SAFE(dst_dt_out.reorder(dst_dt_out_fmt_out), WARN);
             SAFE(compare(p, dst_dt_out_fmt_ref, dst_dt_out, attr_bundle, r),
                     WARN);

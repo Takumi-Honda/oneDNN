@@ -4,13 +4,22 @@
 --dir=FWD_D,BWD_D
 --dt=f32,bf16
 --tag=abx,aBx16b,ABx16a16b
---batch=option_set_all_algs
+--batch=harness_eltwise_all_alg
 
-# uint8, int8, int32
+# int8
 --reset
 --inplace=true,false
 --dir=FWD_I
---dt=u8,s8,s32
+--dt=s32,s8
+--tag=axb
+--alg=relu --alpha=0 --beta=0
+--batch=shapes_eltwise
+
+# u8
+--reset
+--inplace=true,false
+--dir=FWD_I
+--dt=u8
 --tag=axb
 --alg=relu,linear
 --batch=shapes_eltwise
@@ -21,5 +30,5 @@
 --dir=FWD_I
 --dt=f16
 --tag=axb
---batch=option_set_all_algs
+--batch=harness_eltwise_all_alg
 

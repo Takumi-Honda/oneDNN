@@ -1,5 +1,3 @@
---reset
-
 # f32
 --batch=harness_conv_f32_nxc
 

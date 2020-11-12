@@ -55,13 +55,9 @@ struct q10n_conf_t {
     dt_conf_t conf_in;
     dt_conf_t conf_out;
     /* TODO: add attrs */
-    policy_t policy;
+    attr_t::scale_t::policy_t policy;
     float scale;
 };
-
-enum cross_engine_t { NONE, CPU2GPU, GPU2CPU };
-cross_engine_t str2cross_engine(const char *str);
-const char *cross_engine2str(cross_engine_t cross_engine);
 
 struct settings_t {
     settings_t() = default;
@@ -79,17 +75,16 @@ struct settings_t {
     std::vector<flag_t> oflag {FLAG_NONE};
     std::vector<unsigned> runtime_dim_mask {0};
     std::vector<alg_t> alg {ALG_REF};
-    std::vector<cross_engine_t> cross_engine {NONE};
     std::vector<attr_t::scale_t> oscale {attr_t::scale_t()};
     std::vector<attr_t::zero_points_t> zero_points {attr_t::zero_points_t()};
     std::vector<attr_t::post_ops_t> post_ops {attr_t::post_ops_t()};
     attr_t attr = {};
 
     const char *perf_template_csv
-            = "perf,%engine%,%impl%,%sdt%,%ddt%,%stag%,%dtag%,%flags%,%attr%,%"
-              "DESC%,%Gops%,%-time%,%-Gbw%,%0time%,%0Gbw%";
+            = "perf,%engine%,%sdt%,%ddt%,%stag%,%dtag%,%flags%,%attr%,%DESC%,"
+              "%Gops%,%-time%,%-Gbw%,%0time%,%0Gbw%";
     const char *perf_template_def
-            = "perf,%engine%,%impl%,%prb%,%Gops%,%-time%,%-Gbw%,%0time%,%0Gbw%";
+            = "perf,%engine%,%prb%,%Gops%,%-time%,%-Gbw%,%0time%,%0Gbw%";
     const char *perf_template = perf_template_def;
 
     void reset() { *this = settings_t(perf_template); }
@@ -98,15 +93,13 @@ struct settings_t {
 struct prb_t {
     prb_t(const reorder_conf_t &r, const dt_conf_t &conf_in,
             const dt_conf_t &conf_out, const attr_t &attr, alg_t alg,
-            flag_t oflag, cross_engine_t cross_engine,
-            unsigned runtime_dim_mask, float scale = 0.f)
+            flag_t oflag, unsigned runtime_dim_mask, float scale = 0.f)
         : reorder(r)
         , conf_in(conf_in)
         , conf_out(conf_out)
         , attr(attr)
         , alg(alg)
         , oflag(oflag)
-        , cross_engine(cross_engine)
         , runtime_dim_mask(runtime_dim_mask)
         , ops(0)
         , ndims((int)reorder.dims.size()) {
@@ -120,14 +113,10 @@ struct prb_t {
     attr_t attr;
     alg_t alg;
     flag_t oflag;
-    cross_engine_t cross_engine;
     unsigned runtime_dim_mask;
     double ops;
     int ndims;
 
-    bool is_reorder_with_compensation() const {
-        return alg == ALG_BOOT && oflag != FLAG_NONE;
-    }
     void count_ops() {
         if (ops > 0) return;
 
@@ -145,26 +134,14 @@ struct perf_report_t : public base_perf_report_t {
         p_ = p;
         sdt_ = {cfg2dt(p_->conf_in)};
         ddt_ = cfg2dt(p_->conf_out);
-        stag_ = {fmt_tag2str(convert_tag(p_->reorder.tag_in, p_->ndims))};
-        dtag_ = fmt_tag2str(convert_tag(p_->reorder.tag_out, p_->ndims));
+        stag_ = {p_->reorder.tag_in};
         base_report(r, prb_str);
     }
-
-    void dump_alg(std::ostream &s) const override { s << alg2str(p_->alg); }
 
     void dump_desc(std::ostream &s) const override { s << p_->reorder.dims; }
 
     void dump_desc_csv(std::ostream &s) const override {
         s << p_->reorder.dims;
-    }
-
-    void dump_engine(std::ostream &s) const override {
-        if (p_->cross_engine == CPU2GPU)
-            s << "cpu2gpu";
-        else if (p_->cross_engine == GPU2CPU)
-            s << "gpu2cpu";
-        else
-            base_perf_report_t::dump_engine(s);
     }
 
     void dump_flags(std::ostream &s) const override {
@@ -176,14 +153,13 @@ struct perf_report_t : public base_perf_report_t {
     const std::vector<dnnl_data_type_t> *sdt() const override { return &sdt_; }
     const dnnl_data_type_t *ddt() const override { return &ddt_; }
     const std::vector<std::string> *stag() const override { return &stag_; }
-    const std::string *dtag() const override { return &dtag_; }
+    const std::string *dtag() const override { return &p_->reorder.tag_out; }
 
 private:
     const prb_t *p_ = NULL;
     std::vector<dnnl_data_type_t> sdt_;
     dnnl_data_type_t ddt_;
     std::vector<std::string> stag_;
-    std::string dtag_;
 };
 
 int doit(const prb_t *p, res_t *res);

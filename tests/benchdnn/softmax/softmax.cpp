@@ -104,8 +104,7 @@ static int compare(const prb_t *p, const dnn_mem_t &fp_mem,
     const float trh = trh_coeff_dt * trh_coeff_log * 1e-6;
 
     const auto nelems = dt_mem.nelems();
-    if (nelems == 0) return r->state = PASSED, OK;
-
+    r->errors = 0;
     r->total = nelems;
 
     for (int64_t i = 0; i < nelems; i++) {
@@ -205,7 +204,7 @@ int fill_data_bwd(
 }
 
 void check_known_skipped_case(const prb_t *p, res_t *r) {
-    check_known_skipped_case_common({p->dt}, p->dir, r);
+    check_known_skipped_case_common({p->dt}, r);
 }
 
 int doit(const prb_t *p, res_t *r) {

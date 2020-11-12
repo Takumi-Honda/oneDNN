@@ -165,7 +165,6 @@ int str2desc(desc_t *desc, const char *str) {
             != OK)
         return FAIL;
 
-    d.init_pad_r();
     *desc = d;
 
     return OK;
