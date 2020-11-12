@@ -48,10 +48,11 @@
     }
 
 inline DATA_T read_oc_block(const __global DATA_T *ptr, int off) {
-    const int local_id = get_sub_group_local_id();
+    const int local_id = get_local_id(0);
 #if OC_WO_PADDING % OC_BLOCK != 0
     int tail = OC_WO_PADDING - off;
     if (tail < OC_BLOCK) {
+        const int local_id = get_local_id(0);
         return (local_id < tail) ? AS_DATA_T(ptr[local_id]) : DATA_ZERO;
     }
 #endif
@@ -106,10 +107,9 @@ gen9_conv_nhwc_bwd_data(__global DATA_T *diff_src, __global DATA_T *wei,
     DATA_T blockC00[IW_BLOCK] = {DATA_ZERO};
 
     if (WITH_BIAS) {
-        const int bg_off = g * IC;
-        const int bc_off = gic * IC_BLOCK + local_id;
-        DATA_T b = (IC_WO_PADDING % IC_BLOCK == 0 || bc_off < IC_WO_PADDING)
-                ? bias[bg_off + bc_off]
+        const int bg_off = ic * IC_BLOCK + local_id;
+        DATA_T b = (IC_WO_PADDING % IC_BLOCK == 0 || bg_off < IC_WO_PADDING)
+                ? bias[bg_off]
                 : DATA_ZERO;
         unroll_for(int i = 0; i < IW_BLOCK; ++i) { blockC00[i] = b; }
     }

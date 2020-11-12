@@ -33,563 +33,563 @@ namespace x64 {
 
 // Convert between vector register lengths.
 static inline Xbyak::Ymm make_ymm(const Xbyak::Zmm &v) {
-    return Xbyak::Ymm(v.getIdx());
+  return Xbyak::Ymm(v.getIdx());
 }
 
 namespace avx512_core_gemm_smalln_tn_f32 {
 
 struct xbyak_gemm_smalln_tn : public jit_generator {
-    DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_avx512_core_gemm_smalln_tn_xbyak_gemm)
+  DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_avx512_core_gemm_smalln_tn_xbyak_gemm)
 
-    xbyak_gemm_smalln_tn(int N, float beta, float alpha,
-            void *code_ptr = nullptr,
-            size_t code_size = 80 * Xbyak::DEFAULT_MAX_CODE_SIZE)
-        : jit_generator(code_ptr, code_size) {
-        using namespace Xbyak;
-        /**
-         * numN = 1 : 16 rows of A, 1x16 accumulators
-         * numN = 2 : 8  rows of A, 2x8  accumulators
-         * numN = 3 : 8  rows of A, 3x8  accumulators
-         * numN = 4 : 8  rows of A, 4x8  accumulators + stack
-         */
-        numN = N; // Number of columns.
-        isBeta0 = (beta == 0.0);
-        isBetaN = (!isBeta0 && beta != 1.0);
+  xbyak_gemm_smalln_tn(int N, float beta, float alpha,
+          void *code_ptr = nullptr,
+          size_t code_size = 80 * Xbyak::DEFAULT_MAX_CODE_SIZE)
+      : jit_generator(code_ptr, code_size) {
+      using namespace Xbyak;
+      /**
+       * numN = 1 : 16 rows of A, 1x16 accumulators
+       * numN = 2 : 8  rows of A, 2x8  accumulators
+       * numN = 3 : 8  rows of A, 3x8  accumulators
+       * numN = 4 : 8  rows of A, 4x8  accumulators + stack
+       */
+      numN = N; // Number of columns.
+      isBeta0 = (beta == 0.0);
+      isBetaN = (!isBeta0 && beta != 1.0);
 
-        isAlpha0 = (alpha == 0.0);
-        isAlphaN = (!isAlpha0 && alpha != 1.0);
+      isAlpha0 = (alpha == 0.0);
+      isAlphaN = (!isAlpha0 && alpha != 1.0);
 
-        // various definitions for convenience
-        auto ARG_M = abi_param1;
-        auto ARG_K = abi_param2;
-        auto ARG_ALPHA = abi_param3;
-        auto ARG_BETA = abi_param4;
+      // various definitions for convenience
+      auto ARG_M = abi_param1;
+      auto ARG_K = abi_param2;
+      auto ARG_ALPHA = abi_param3;
+      auto ARG_BETA = abi_param4;
 #ifdef _WIN32
-        auto ARG_A = ptr[rsp + OFFSET_SHADOWSPACE + get_size_of_abi_save_regs()
-                + STACKSIZE];
-        auto ARG_LDA = qword[rsp + OFFSET_SHADOWSPACE + sizeof(float *)
-                + get_size_of_abi_save_regs() + STACKSIZE];
-        A = rsi;
-        LDA = rdi;
-        const auto stackOffset = get_size_of_abi_save_regs()
-                + OFFSET_SHADOWSPACE + sizeof(float *) + STACKSIZE;
+      auto ARG_A = ptr[rsp + OFFSET_SHADOWSPACE + get_size_of_abi_save_regs()
+              + STACKSIZE];
+      auto ARG_LDA = qword[rsp + OFFSET_SHADOWSPACE + sizeof(float *)
+              + get_size_of_abi_save_regs() + STACKSIZE];
+      A = rsi;
+      LDA = rdi;
+      const auto stackOffset = get_size_of_abi_save_regs()
+              + OFFSET_SHADOWSPACE + sizeof(float *) + STACKSIZE;
 #else
-        auto ARG_A = r8;
-        auto ARG_LDA = r9;
-        A = ARG_A;
-        LDA = ARG_LDA;
-        const auto stackOffset = get_size_of_abi_save_regs() + STACKSIZE;
+      auto ARG_A = r8;
+      auto ARG_LDA = r9;
+      A = ARG_A;
+      LDA = ARG_LDA;
+      const auto stackOffset = get_size_of_abi_save_regs() + STACKSIZE;
 #endif
-        auto ARG_B = ptr[rsp + 8 + stackOffset];
-        auto ARG_LDB = ptr[rsp + 16 + stackOffset];
-        auto ARG_C = ptr[rsp + 24 + stackOffset];
-        auto ARG_LDC = ptr[rsp + 32 + stackOffset];
+      auto ARG_B = ptr[rsp + 8 + stackOffset];
+      auto ARG_LDB = ptr[rsp + 16 + stackOffset];
+      auto ARG_C = ptr[rsp + 24 + stackOffset];
+      auto ARG_LDC = ptr[rsp + 32 + stackOffset];
 
-        TEMP_REG = abi_param1;
-        AO1 = abi_param2;
-        BO2 = abi_param3; // numN == 4
-        CO2 = abi_param4;
-        JJ = rbx;
-        II = rbp;
-        BO1 = rax;
-        TEMP_REG2 = r10;
-        B = r11;
-        LDB = r12; // numN > 1
-        LDC = r13;
-        CO1 = r14;
-        AO2 = r15;
-        // masks for load/store remainder handling
-        k_rem = k1;
-        m_rem = k2;
+      TEMP_REG = abi_param1;
+      AO1 = abi_param2;
+      BO2 = abi_param3; // numN == 4
+      CO2 = abi_param4;
+      JJ = rbx;
+      II = rbp;
+      BO1 = rax;
+      TEMP_REG2 = r10;
+      B = r11;
+      LDB = r12; // numN > 1
+      LDC = r13;
+      CO1 = r14;
+      AO2 = r15;
+      // masks for load/store remainder handling
+      k_rem = k1;
+      m_rem = k2;
 
-        auto M = qword[rsp + 64];
-        auto K = qword[rsp + 72];
-        auto ORIG_A = qword[rsp + 80];
-        auto ORIG_B = qword[rsp + 88];
-        auto KREM = qword[rsp + 96];
-        auto MREM = qword[rsp + 104];
-        auto ALPHA = ptr_b[rsp + 112];
-        auto BETA = ptr_b[rsp + 120];
+      auto M = qword[rsp + 64];
+      auto K = qword[rsp + 72];
+      auto ORIG_A = qword[rsp + 80];
+      auto ORIG_B = qword[rsp + 88];
+      auto KREM = qword[rsp + 96];
+      auto MREM = qword[rsp + 104];
+      auto ALPHA = ptr_b[rsp + 112];
+      auto BETA = ptr_b[rsp + 120];
 
-        const int perm_ab_offset = 128;
-        const int perm_ba_offset = perm_ab_offset + 64;
-        const int perm_ab1_offset = perm_ba_offset + 64;
-        const int perm_ba1_offset = perm_ab1_offset + 64; // 384
+      const int perm_ab_offset = 128;
+      const int perm_ba_offset = perm_ab_offset + 64;
+      const int perm_ab1_offset = perm_ba_offset + 64;
+      const int perm_ba1_offset = perm_ab1_offset + 64; // 384
 
-        static Zmm zmmreg[] = {zmm16, zmm17, zmm18, zmm19, zmm20, zmm21, zmm22,
-                zmm23, zmm24, zmm25, zmm26, zmm27, zmm28, zmm29, zmm30, zmm31,
-                zmm0, zmm1, zmm2, zmm3, zmm4, zmm5, zmm6, zmm7, zmm8, zmm9,
-                zmm10, zmm11, zmm12, zmm13, zmm14, zmm15};
+      static Zmm zmmreg[] = {zmm16, zmm17, zmm18, zmm19, zmm20, zmm21, zmm22,
+              zmm23, zmm24, zmm25, zmm26, zmm27, zmm28, zmm29, zmm30, zmm31,
+              zmm0, zmm1, zmm2, zmm3, zmm4, zmm5, zmm6, zmm7, zmm8, zmm9,
+              zmm10, zmm11, zmm12, zmm13, zmm14, zmm15};
 
-        static Address perm_[] = {dword[rsp + perm_ab_offset],
-                dword[rsp + perm_ba_offset], dword[rsp + perm_ab1_offset],
-                dword[rsp + perm_ba1_offset]};
+      static Address perm_[] = {dword[rsp + perm_ab_offset],
+              dword[rsp + perm_ba_offset], dword[rsp + perm_ab1_offset],
+              dword[rsp + perm_ba1_offset]};
 
-        const int tempzmm_offset = 488;
-        static Address TEMPZMM_[8] = {ptr[rsp + tempzmm_offset + 64 * 0],
-                ptr[rsp + tempzmm_offset + 64 * 1],
-                ptr[rsp + tempzmm_offset + 64 * 2],
-                ptr[rsp + tempzmm_offset + 64 * 3],
-                ptr[rsp + tempzmm_offset + 64 * 4],
-                ptr[rsp + tempzmm_offset + 64 * 5],
-                ptr[rsp + tempzmm_offset + 64 * 6],
-                ptr[rsp + tempzmm_offset + 64 * 7]};
+      const int tempzmm_offset = 488;
+      static Address TEMPZMM_[8] = {ptr[rsp + tempzmm_offset + 64 * 0],
+              ptr[rsp + tempzmm_offset + 64 * 1],
+              ptr[rsp + tempzmm_offset + 64 * 2],
+              ptr[rsp + tempzmm_offset + 64 * 3],
+              ptr[rsp + tempzmm_offset + 64 * 4],
+              ptr[rsp + tempzmm_offset + 64 * 5],
+              ptr[rsp + tempzmm_offset + 64 * 6],
+              ptr[rsp + tempzmm_offset + 64 * 7]};
 
-        int numMREM = (numN == 1) ? 16 : 8;
-        Label label_mremT[17], label_kremT[16], label_k_loopT[16],
-                label_no_k_remT[16];
+      int numMREM = (numN == 1) ? 16 : 8;
+      Label label_mremT[17], label_kremT[16], label_k_loopT[16],
+              label_no_k_remT[16];
 
-        zmm_reg = zmmreg;
-        TEMPZMM = TEMPZMM_;
-        perm = perm_;
+      zmm_reg = zmmreg;
+      TEMPZMM = TEMPZMM_;
+      perm = perm_;
 
-        // Start of kernel.
-        preamble();
-        sub(rsp, STACKSIZE);
+      // Start of kernel.
+      preamble();
+      sub(rsp, STACKSIZE);
 
 #ifdef _WIN32
-        mov(A, ARG_A);
-        mov(LDA, ARG_LDA);
+      mov(A, ARG_A);
+      mov(LDA, ARG_LDA);
 #endif
 
-        // Back up all parameters
-        mov(M, ARG_M);
-        mov(K, ARG_K);
-        mov(ORIG_A, A);
-        mov(B, ARG_B);
-        mov(ORIG_B, B);
-        mov(LDC, ARG_LDC);
-        mov(LDB, ARG_LDB);
+      // Back up all parameters
+      mov(M, ARG_M);
+      mov(K, ARG_K);
+      mov(ORIG_A, A);
+      mov(B, ARG_B);
+      mov(ORIG_B, B);
+      mov(LDC, ARG_LDC);
+      mov(LDB, ARG_LDB);
 
-        mov(ARG_ALPHA, dword[ARG_ALPHA]);
-        mov(ARG_BETA, dword[ARG_BETA]);
-        mov(ALPHA, ARG_ALPHA);
-        mov(BETA, ARG_BETA);
+      mov(ARG_ALPHA, dword[ARG_ALPHA]);
+      mov(ARG_BETA, dword[ARG_BETA]);
+      mov(ALPHA, ARG_ALPHA);
+      mov(BETA, ARG_BETA);
 
-        if (!isAlpha0) {
-            for (int ii = 0; ii < 16; ii++) {
-                mov(dword[rsp + perm_ab_offset + 4 * ii], permute_ab[ii]);
-                mov(dword[rsp + perm_ba_offset + 4 * ii], permute_ba[ii]);
-                mov(dword[rsp + perm_ab1_offset + 4 * ii], permute_ab1[ii]);
-                mov(dword[rsp + perm_ba1_offset + 4 * ii], permute_ba1[ii]);
-            }
-        }
+      if (!isAlpha0) {
+          for (int ii = 0; ii < 16; ii++) {
+              mov(dword[rsp + perm_ab_offset + 4 * ii], permute_ab[ii]);
+              mov(dword[rsp + perm_ba_offset + 4 * ii], permute_ba[ii]);
+              mov(dword[rsp + perm_ab1_offset + 4 * ii], permute_ab1[ii]);
+              mov(dword[rsp + perm_ba1_offset + 4 * ii], permute_ba1[ii]);
+          }
+      }
 
-        mov(CO1, ARG_C);
-        shl(LDA, 2); // sizeof(float) * LDA
-        shl(LDC, 2); // sizeof(float) * LDC
-        if (numN > 1) shl(LDB, 2); // sizeof(float) * LDB
+      mov(CO1, ARG_C);
+      shl(LDA, 2); // sizeof(float) * LDA
+      shl(LDC, 2); // sizeof(float) * LDC
+      if (numN > 1) shl(LDB, 2); // sizeof(float) * LDB
 
-        // Check for K remainder
-        if (!isAlpha0) {
-            mov(TEMP_REG, K);
-            and_(K, ~15);
-            sub(TEMP_REG, K);
-            mov(KREM, TEMP_REG);
-            mov(rax, 1);
-            mov(rcx, TEMP_REG);
-            shl(rax, cl);
-            sub(rax, 1);
-            kmovq(k_rem, rax);
-        }
+      // Check for K remainder
+      if (!isAlpha0) {
+          mov(TEMP_REG, K);
+          and_(K, ~15);
+          sub(TEMP_REG, K);
+          mov(KREM, TEMP_REG);
+          mov(rax, 1);
+          mov(rcx, TEMP_REG);
+          shl(rax, cl);
+          sub(rax, 1);
+          kmovq(k_rem, rax);
+      }
 
-        // Check for M remainder
-        mov(TEMP_REG2, M);
-        and_(M, (numN > 1) ? ~7 : ~15);
-        sub(TEMP_REG2, M);
-        mov(MREM, TEMP_REG2);
-        mov(rax, 1);
-        mov(rcx, TEMP_REG2);
-        shl(rax, cl);
-        sub(rax, 1);
-        kmovq(m_rem, rax);
+      // Check for M remainder
+      mov(TEMP_REG2, M);
+      and_(M, (numN > 1) ? ~7 : ~15);
+      sub(TEMP_REG2, M);
+      mov(MREM, TEMP_REG2);
+      mov(rax, 1);
+      mov(rcx, TEMP_REG2);
+      shl(rax, cl);
+      sub(rax, 1);
+      kmovq(m_rem, rax);
 
-        // If M < unroll skip M loop.
-        mov(TEMP_REG2, M);
-        test(TEMP_REG2, TEMP_REG2);
-        jz(label_mrem, T_NEAR);
+      // If M < unroll skip M loop.
+      mov(TEMP_REG2, M);
+      test(TEMP_REG2, TEMP_REG2);
+      jz(label_mrem, T_NEAR);
 
-        // M LOOP
-        mov(II, M);
-        L_aligned(label_m_loop);
+      // M LOOP
+      mov(II, M);
+      L_aligned(label_m_loop);
 
-        if (!isAlpha0) {
-            mov(AO1, ORIG_A);
-            mov(BO1, ORIG_B);
-            if (numN == 4) {
-                lea(BO2, ptr[BO1 + LDB]);
-                lea(BO2, ptr[BO2 + LDB * 2]);
-            }
-            mov(JJ, K);
-            zero_accumulators();
-            mov(TEMP_REG2, K);
-            test(TEMP_REG2, TEMP_REG2);
-            jz(label_krem, T_NEAR);
-            // K LOOP
-            L_aligned(label_k_loop);
-            kloop(false, ALPHA, (numN == 1) ? 16 : 8);
-            test(JJ, JJ);
-            jne(label_k_loop);
-            // Handle k remainder
-            mov(TEMP_REG2, KREM);
-            test(TEMP_REG2, TEMP_REG2);
-            jz(label_no_k_rem, T_NEAR);
-            L_aligned(label_krem);
-            kloop(true, ALPHA, (numN == 1) ? 16 : 8);
-            L_aligned(label_no_k_rem);
-            reduction_16x16();
-        } else
-            zero_accumulators();
+      if (!isAlpha0) {
+          mov(AO1, ORIG_A);
+          mov(BO1, ORIG_B);
+          if (numN == 4) {
+              lea(BO2, ptr[BO1 + LDB]);
+              lea(BO2, ptr[BO2 + LDB * 2]);
+          }
+          mov(JJ, K);
+          zero_accumulators();
+          mov(TEMP_REG2, K);
+          test(TEMP_REG2, TEMP_REG2);
+          jz(label_krem, T_NEAR);
+          // K LOOP
+          L_aligned(label_k_loop);
+          kloop(false, ALPHA, (numN == 1) ? 16 : 8);
+          test(JJ, JJ);
+          jne(label_k_loop);
+          // Handle k remainder
+          mov(TEMP_REG2, KREM);
+          test(TEMP_REG2, TEMP_REG2);
+          jz(label_no_k_rem, T_NEAR);
+          L_aligned(label_krem);
+          kloop(true, ALPHA, (numN == 1) ? 16 : 8);
+          L_aligned(label_no_k_rem);
+          reduction_16x16();
+      } else
+          zero_accumulators();
 
-        updateC(false, BETA);
+      updateC(false, BETA);
 
-        sub(II, (numN < 2) ? 16 : 8);
-        if (!isAlpha0) mov(AO1, ORIG_A);
-        if (!isAlpha0) lea(AO1, ptr[AO1 + LDA * 8]);
-        add(CO1, (numN < 2) ? 64 : 32);
+      sub(II, (numN < 2) ? 16 : 8);
+      if (!isAlpha0) mov(AO1, ORIG_A);
+      if (!isAlpha0) lea(AO1, ptr[AO1 + LDA * 8]);
+      add(CO1, (numN < 2) ? 64 : 32);
 
-        if (numN < 2 && !isAlpha0) lea(AO1, ptr[AO1 + LDA * 8]);
-        if (!isAlpha0) mov(ORIG_A, AO1);
-        test(II, II);
-        jne(label_m_loop); // End of M loop
+      if (numN < 2 && !isAlpha0) lea(AO1, ptr[AO1 + LDA * 8]);
+      if (!isAlpha0) mov(ORIG_A, AO1);
+      test(II, II);
+      jne(label_m_loop); // End of M loop
 
-        mov(TEMP_REG, MREM);
-        test(TEMP_REG, TEMP_REG);
-        je(label_mremT[numMREM], T_NEAR); // No remainders for M, skip to end.
+      mov(TEMP_REG, MREM);
+      test(TEMP_REG, TEMP_REG);
+      je(label_mremT[numMREM], T_NEAR); // No remainders for M, skip to end.
 
-        L_aligned(label_mrem);
-        if (!isAlpha0) {
-            // Handling M remainders...
-            mov(AO1, ORIG_A);
-            mov(BO1, ORIG_B);
-            if (numN == 4) {
-                lea(BO2, ptr[BO1 + LDB]);
-                lea(BO2, ptr[BO2 + LDB * 2]);
-            }
-            mov(JJ, K);
-            zero_accumulators();
+      L_aligned(label_mrem);
+      if (!isAlpha0) {
+          // Handling M remainders...
+          mov(AO1, ORIG_A);
+          mov(BO1, ORIG_B);
+          if (numN == 4) {
+              lea(BO2, ptr[BO1 + LDB]);
+              lea(BO2, ptr[BO2 + LDB * 2]);
+          }
+          mov(JJ, K);
+          zero_accumulators();
 
-            mov(TEMP_REG, MREM);
-            for (int ii = 0; ii < numMREM - 1; ii++) {
-                cmp(TEMP_REG, ii + 1);
-                je(label_mremT[ii], T_NEAR);
-            }
-            for (int ii = 0; ii < numMREM - 1; ii++) {
-                L_aligned(label_mremT[ii]);
-                mov(TEMP_REG, K);
-                test(TEMP_REG, TEMP_REG);
-                jz(label_kremT[ii], T_NEAR);
-                // K LOOP
-                L_aligned(label_k_loopT[ii]);
-                kloop(false, ALPHA, ii + 1);
-                test(JJ, JJ);
-                jne(label_k_loopT[ii]);
-                // Handle k remainder
-                mov(TEMP_REG2, KREM);
-                test(TEMP_REG2, TEMP_REG2);
-                jz(label_no_k_remT[ii], T_NEAR);
-                L_aligned(label_kremT[ii]);
-                kloop(true, ALPHA, ii + 1);
-                L_aligned(label_no_k_remT[ii]);
-                jmp(label_mremT[numMREM - 1], T_NEAR);
-            }
-            L_aligned(label_mremT[numMREM - 1]);
-            reduction_16x16();
-        } else
-            zero_accumulators();
+          mov(TEMP_REG, MREM);
+          for (int ii = 0; ii < numMREM - 1; ii++) {
+              cmp(TEMP_REG, ii + 1);
+              je(label_mremT[ii], T_NEAR);
+          }
+          for (int ii = 0; ii < numMREM - 1; ii++) {
+              L_aligned(label_mremT[ii]);
+              mov(TEMP_REG, K);
+              test(TEMP_REG, TEMP_REG);
+              jz(label_kremT[ii], T_NEAR);
+              // K LOOP
+              L_aligned(label_k_loopT[ii]);
+              kloop(false, ALPHA, ii + 1);
+              test(JJ, JJ);
+              jne(label_k_loopT[ii]);
+              // Handle k remainder
+              mov(TEMP_REG2, KREM);
+              test(TEMP_REG2, TEMP_REG2);
+              jz(label_no_k_remT[ii], T_NEAR);
+              L_aligned(label_kremT[ii]);
+              kloop(true, ALPHA, ii + 1);
+              L_aligned(label_no_k_remT[ii]);
+              jmp(label_mremT[numMREM - 1], T_NEAR);
+          }
+          L_aligned(label_mremT[numMREM - 1]);
+          reduction_16x16();
+      } else
+          zero_accumulators();
 
-        updateC(true, BETA);
-        L_aligned(label_mremT[numMREM]);
+      updateC(true, BETA);
+      L_aligned(label_mremT[numMREM]);
 
-        add(rsp, STACKSIZE);
-        postamble();
-        ker_ = this->getCode<ker_t>();
-    }
+      add(rsp, STACKSIZE);
+      postamble();
+      ker_ = this->getCode<ker_t>();
+  }
 
-    void zero_accumulators() {
-        // Set accumlators to zero.
-        if (isAlpha0) { // zero all.
-            for (int ii = 0; ii < 32; ii++) // 0-31
-                vpxorq(zmm_reg[ii], zmm_reg[ii], zmm_reg[ii]);
-            return;
-        }
-        for (int ii = 0; ii < 16; ii++) // 16-31
-            vpxorq(zmm_reg[16 + ii], zmm_reg[16 + ii], zmm_reg[16 + ii]);
+  void zero_accumulators() {
+      // Set accumlators to zero.
+      if (isAlpha0) { // zero all.
+          for (int ii = 0; ii < 32; ii++) // 0-31
+              vpxorq(zmm_reg[ii], zmm_reg[ii], zmm_reg[ii]);
+          return;
+      }
+      for (int ii = 0; ii < 16; ii++) // 16-31
+          vpxorq(zmm_reg[16 + ii], zmm_reg[16 + ii], zmm_reg[16 + ii]);
 
-        if (numN < 5) {
-            for (int ii = 0; ii < 8; ii++) // 0-7
-                vpxorq(zmm_reg[ii], zmm_reg[ii], zmm_reg[ii]);
-        }
-        if (numN == 4) {
-            for (int ii = 0; ii < 4; ii++) { // 8-11
-                vpxorq(zmm_reg[ii + 8], zmm_reg[ii + 8], zmm_reg[ii + 8]);
-                vmovups(TEMPZMM[2 * ii], zmm_reg[ii + 8]);
-                vmovups(TEMPZMM[2 * ii + 1], zmm_reg[ii + 8]);
-            }
-        }
-    }
+      if (numN < 5) {
+          for (int ii = 0; ii < 8; ii++) // 0-7
+              vpxorq(zmm_reg[ii], zmm_reg[ii], zmm_reg[ii]);
+      }
+      if (numN == 4) {
+          for (int ii = 0; ii < 4; ii++) { // 8-11
+              vpxorq(zmm_reg[ii + 8], zmm_reg[ii + 8], zmm_reg[ii + 8]);
+              vmovups(TEMPZMM[2 * ii], zmm_reg[ii + 8]);
+              vmovups(TEMPZMM[2 * ii + 1], zmm_reg[ii + 8]);
+          }
+      }
+  }
 
-    void updateC(bool mrem, Xbyak::Operand &BETA) {
-        if (numN < 2) {
-            if (!isBeta0) {
-                vmovups(zmm_reg[25] | (mrem ? m_rem : k0), ptr[CO1]);
-                if (isBetaN) vmulps(zmm_reg[25], zmm_reg[25], BETA);
-                vaddps(zmm_reg[24], zmm_reg[24], zmm_reg[25]);
-            }
-            vmovups(ptr[CO1] | (mrem ? m_rem : k0), zmm_reg[24]);
-        } else {
-            if (!isBeta0) {
-                vmovups(make_ymm(zmm_reg[1]) | (mrem ? m_rem : k0), ptr[CO1]);
-                vmovups(make_ymm(zmm_reg[2]) | (mrem ? m_rem : k0),
-                        ptr[CO1 + LDC]);
-                if (isBetaN) {
-                    vmulps(make_ymm(zmm_reg[1]), make_ymm(zmm_reg[1]), BETA);
-                    vmulps(make_ymm(zmm_reg[2]), make_ymm(zmm_reg[2]), BETA);
-                }
-            }
-            vshuff64x2(zmm_reg[4], zmm_reg[24], zmm_reg[24], 0b11101110);
-            if (!isBeta0)
-                vaddps(make_ymm(zmm_reg[24]), make_ymm(zmm_reg[24]),
-                        make_ymm(zmm_reg[1]));
-            if (!isBeta0)
-                vaddps(make_ymm(zmm_reg[4]), make_ymm(zmm_reg[4]),
-                        make_ymm(zmm_reg[2]));
-            vmovups(ptr[CO1] | (mrem ? m_rem : k0), make_ymm(zmm_reg[24]));
-            vmovups(ptr[CO1 + LDC] | (mrem ? m_rem : k0), make_ymm(zmm_reg[4]));
+  void updateC(bool mrem, Xbyak::Operand &BETA) {
+      if (numN < 2) {
+          if (!isBeta0) {
+              vmovups(zmm_reg[25] | (mrem ? m_rem : k0), ptr[CO1]);
+              if (isBetaN) vmulps(zmm_reg[25], zmm_reg[25], BETA);
+              vaddps(zmm_reg[24], zmm_reg[24], zmm_reg[25]);
+          }
+          vmovups(ptr[CO1] | (mrem ? m_rem : k0), zmm_reg[24]);
+      } else {
+          if (!isBeta0) {
+              vmovups(make_ymm(zmm_reg[1]) | (mrem ? m_rem : k0), ptr[CO1]);
+              vmovups(make_ymm(zmm_reg[2]) | (mrem ? m_rem : k0),
+                      ptr[CO1 + LDC]);
+              if (isBetaN) {
+                  vmulps(make_ymm(zmm_reg[1]), make_ymm(zmm_reg[1]), BETA);
+                  vmulps(make_ymm(zmm_reg[2]), make_ymm(zmm_reg[2]), BETA);
+              }
+          }
+          vshuff64x2(zmm_reg[4], zmm_reg[24], zmm_reg[24], 0b11101110);
+          if (!isBeta0)
+              vaddps(make_ymm(zmm_reg[24]), make_ymm(zmm_reg[24]),
+                      make_ymm(zmm_reg[1]));
+          if (!isBeta0)
+              vaddps(make_ymm(zmm_reg[4]), make_ymm(zmm_reg[4]),
+                      make_ymm(zmm_reg[2]));
+          vmovups(ptr[CO1] | (mrem ? m_rem : k0), make_ymm(zmm_reg[24]));
+          vmovups(ptr[CO1 + LDC] | (mrem ? m_rem : k0), make_ymm(zmm_reg[4]));
 
-            if (numN == 3) {
-                if (!isBeta0) {
-                    vmovups(make_ymm(zmm_reg[5]) | (mrem ? m_rem : k0),
-                            ptr[CO1 + LDC * 2]);
-                    if (isBetaN)
-                        vmulps(make_ymm(zmm_reg[5]), make_ymm(zmm_reg[5]),
-                                BETA);
-                    vaddps(make_ymm(zmm_reg[16]), make_ymm(zmm_reg[16]),
-                            make_ymm(zmm_reg[5]));
-                }
-                vmovups(ptr[CO1 + LDC * 2] | (mrem ? m_rem : k0),
-                        make_ymm(zmm_reg[16]));
-            }
-            if (numN == 4) {
-                lea(CO2, ptr[CO1 + LDC]);
-                lea(CO2, ptr[CO2 + LDC * 2]);
-                if (!isBeta0) {
-                    vmovups(make_ymm(zmm_reg[5]) | (mrem ? m_rem : k0),
-                            ptr[CO1 + LDC * 2]);
-                    vmovups(make_ymm(zmm_reg[6]) | (mrem ? m_rem : k0),
-                            ptr[CO2]);
-                    if (isBetaN) {
-                        vmulps(make_ymm(zmm_reg[5]), make_ymm(zmm_reg[5]),
-                                BETA);
-                        vmulps(make_ymm(zmm_reg[6]), make_ymm(zmm_reg[6]),
-                                BETA);
-                    }
-                }
-                vshuff64x2(zmm_reg[10], zmm_reg[0], zmm_reg[0], 0b11101110);
-                if (!isBeta0)
-                    vaddps(make_ymm(zmm_reg[0]), make_ymm(zmm_reg[0]),
-                            make_ymm(zmm_reg[5]));
-                if (!isBeta0)
-                    vaddps(make_ymm(zmm_reg[10]), make_ymm(zmm_reg[10]),
-                            make_ymm(zmm_reg[6]));
-                vmovups(ptr[CO1 + LDC * 2] | (mrem ? m_rem : k0),
-                        make_ymm(zmm_reg[0]));
-                vmovups(ptr[CO2] | (mrem ? m_rem : k0), make_ymm(zmm_reg[10]));
-            }
-        }
-    }
+          if (numN == 3) {
+              if (!isBeta0) {
+                  vmovups(make_ymm(zmm_reg[5]) | (mrem ? m_rem : k0),
+                          ptr[CO1 + LDC * 2]);
+                  if (isBetaN)
+                      vmulps(make_ymm(zmm_reg[5]), make_ymm(zmm_reg[5]),
+                              BETA);
+                  vaddps(make_ymm(zmm_reg[16]), make_ymm(zmm_reg[16]),
+                          make_ymm(zmm_reg[5]));
+              }
+              vmovups(ptr[CO1 + LDC * 2] | (mrem ? m_rem : k0),
+                      make_ymm(zmm_reg[16]));
+          }
+          if (numN == 4) {
+              lea(CO2, ptr[CO1 + LDC]);
+              lea(CO2, ptr[CO2 + LDC * 2]);
+              if (!isBeta0) {
+                  vmovups(make_ymm(zmm_reg[5]) | (mrem ? m_rem : k0),
+                          ptr[CO1 + LDC * 2]);
+                  vmovups(make_ymm(zmm_reg[6]) | (mrem ? m_rem : k0),
+                          ptr[CO2]);
+                  if (isBetaN) {
+                      vmulps(make_ymm(zmm_reg[5]), make_ymm(zmm_reg[5]),
+                              BETA);
+                      vmulps(make_ymm(zmm_reg[6]), make_ymm(zmm_reg[6]),
+                              BETA);
+                  }
+              }
+              vshuff64x2(zmm_reg[10], zmm_reg[0], zmm_reg[0], 0b11101110);
+              if (!isBeta0)
+                  vaddps(make_ymm(zmm_reg[0]), make_ymm(zmm_reg[0]),
+                          make_ymm(zmm_reg[5]));
+              if (!isBeta0)
+                  vaddps(make_ymm(zmm_reg[10]), make_ymm(zmm_reg[10]),
+                          make_ymm(zmm_reg[6]));
+              vmovups(ptr[CO1 + LDC * 2] | (mrem ? m_rem : k0),
+                      make_ymm(zmm_reg[0]));
+              vmovups(ptr[CO2] | (mrem ? m_rem : k0), make_ymm(zmm_reg[10]));
+          }
+      }
+  }
 
-    void reduction_16x16() {
-        // 16-way reduction
-        /**
-         * Does not touch zmm_reg[0]-zmm_reg[7]
-         * Final reductions stored in zmm_reg[24]
-         */
-        // [ A1 | A2 ] , [ B1 | B2 ]  --> [ A1 | B1 ], [ A2 | B2 ]
-        for (int ii = 0; ii < 8; ii++) {
-            vshuff32x4(zmm_reg[ii + 8], zmm_reg[ii + 16], zmm_reg[ii + 16 + 8],
-                    0b01000100); // [ A1 | B1 ]
-            vshuff32x4(zmm_reg[ii + 9], zmm_reg[ii + 16], zmm_reg[ii + 16 + 8],
-                    0b11101110); // [ A2 | B2 ]
-            vaddps(zmm_reg[ii + 24], zmm_reg[ii + 8],
-                    zmm_reg[ii + 9]); // [ A1 + A2 | B1 + B2 ]
-        }
-        vmovups(zmm_reg[8], perm[0]);
-        vmovups(zmm_reg[9], perm[1]);
-        for (int ii = 0; ii < 4; ii++) {
-            vmovaps(zmm_reg[10], zmm_reg[8]);
-            vmovaps(zmm_reg[11], zmm_reg[9]);
-            vpermi2ps(zmm_reg[10], zmm_reg[ii + 24], zmm_reg[ii + 24 + 4]);
-            vpermi2ps(zmm_reg[11], zmm_reg[ii + 24], zmm_reg[ii + 24 + 4]);
-            vaddps(zmm_reg[ii + 24], zmm_reg[10], zmm_reg[11]);
-        }
-        for (int ii = 0; ii < 2; ii++) {
-            vshufpd(zmm_reg[10], zmm_reg[ii + 24], zmm_reg[ii + 24 + 2],
-                    0b00000000);
-            vshufpd(zmm_reg[11], zmm_reg[ii + 24], zmm_reg[ii + 24 + 2],
-                    0b11111111);
-            vaddps(zmm_reg[ii + 24], zmm_reg[10], zmm_reg[11]);
-        }
-        vmovups(zmm_reg[12], perm[2]);
-        vmovups(zmm_reg[13], perm[3]);
-        vpermi2ps(zmm_reg[12], zmm_reg[24], zmm_reg[25]);
-        vpermi2ps(zmm_reg[13], zmm_reg[24], zmm_reg[25]);
-        vaddps(zmm_reg[24], zmm_reg[12], zmm_reg[13]);
+  void reduction_16x16() {
+      // 16-way reduction
+      /**
+       * Does not touch zmm_reg[0]-zmm_reg[7]
+       * Final reductions stored in zmm_reg[24]
+       */
+      // [ A1 | A2 ] , [ B1 | B2 ]  --> [ A1 | B1 ], [ A2 | B2 ]
+      for (int ii = 0; ii < 8; ii++) {
+          vshuff32x4(zmm_reg[ii + 8], zmm_reg[ii + 16], zmm_reg[ii + 16 + 8],
+                  0b01000100); // [ A1 | B1 ]
+          vshuff32x4(zmm_reg[ii + 9], zmm_reg[ii + 16], zmm_reg[ii + 16 + 8],
+                  0b11101110); // [ A2 | B2 ]
+          vaddps(zmm_reg[ii + 24], zmm_reg[ii + 8],
+                  zmm_reg[ii + 9]); // [ A1 + A2 | B1 + B2 ]
+      }
+      vmovups(zmm_reg[8], perm[0]);
+      vmovups(zmm_reg[9], perm[1]);
+      for (int ii = 0; ii < 4; ii++) {
+          vmovaps(zmm_reg[10], zmm_reg[8]);
+          vmovaps(zmm_reg[11], zmm_reg[9]);
+          vpermi2ps(zmm_reg[10], zmm_reg[ii + 24], zmm_reg[ii + 24 + 4]);
+          vpermi2ps(zmm_reg[11], zmm_reg[ii + 24], zmm_reg[ii + 24 + 4]);
+          vaddps(zmm_reg[ii + 24], zmm_reg[10], zmm_reg[11]);
+      }
+      for (int ii = 0; ii < 2; ii++) {
+          vshufpd(zmm_reg[10], zmm_reg[ii + 24], zmm_reg[ii + 24 + 2],
+                  0b00000000);
+          vshufpd(zmm_reg[11], zmm_reg[ii + 24], zmm_reg[ii + 24 + 2],
+                  0b11111111);
+          vaddps(zmm_reg[ii + 24], zmm_reg[10], zmm_reg[11]);
+      }
+      vmovups(zmm_reg[12], perm[2]);
+      vmovups(zmm_reg[13], perm[3]);
+      vpermi2ps(zmm_reg[12], zmm_reg[24], zmm_reg[25]);
+      vpermi2ps(zmm_reg[13], zmm_reg[24], zmm_reg[25]);
+      vaddps(zmm_reg[24], zmm_reg[12], zmm_reg[13]);
 
-        if (numN == 4) {
-            // Final reductions stored in zmm_reg[0]
-            for (int ii = 0; ii < 8; ii++)
-                vmovups(zmm_reg[ii + 8], TEMPZMM[ii]);
+      if (numN == 4) {
+          // Final reductions stored in zmm_reg[0]
+          for (int ii = 0; ii < 8; ii++)
+              vmovups(zmm_reg[ii + 8], TEMPZMM[ii]);
 
-            for (int ii = 0; ii < 8; ii++) {
-                vshuff32x4(zmm_reg[ii + 16], zmm_reg[ii], zmm_reg[ii + 8],
-                        0b01000100);
-                if (ii == 7) {
-                    vshuff32x4(zmm_reg[30], zmm_reg[ii], zmm_reg[ii + 8],
-                            0b11101110);
-                    vaddps(zmm_reg[ii], zmm_reg[ii + 16], zmm_reg[30]);
-                } else {
-                    vshuff32x4(zmm_reg[ii + 16 + 1], zmm_reg[ii],
-                            zmm_reg[ii + 8], 0b11101110);
-                    vaddps(zmm_reg[ii], zmm_reg[ii + 16], zmm_reg[ii + 16 + 1]);
-                }
-            }
-            vmovups(zmm_reg[8], perm[0]);
-            vmovups(zmm_reg[9], perm[1]);
-            for (int ii = 0; ii < 4; ii++) {
-                vmovaps(zmm_reg[10], zmm_reg[8]);
-                vmovaps(zmm_reg[11], zmm_reg[9]);
-                vpermi2ps(zmm_reg[10], zmm_reg[ii], zmm_reg[ii + 4]);
-                vpermi2ps(zmm_reg[11], zmm_reg[ii], zmm_reg[ii + 4]);
-                vaddps(zmm_reg[ii], zmm_reg[10], zmm_reg[11]);
-            }
-            for (int ii = 0; ii < 2; ii++) {
-                vshufpd(zmm_reg[10], zmm_reg[ii], zmm_reg[ii + 2], 0b00000000);
-                vshufpd(zmm_reg[11], zmm_reg[ii], zmm_reg[ii + 2], 0b11111111);
-                vaddps(zmm_reg[ii], zmm_reg[10], zmm_reg[11]);
-            }
-            vmovups(zmm_reg[12], perm[2]);
-            vmovups(zmm_reg[13], perm[3]);
-            vpermi2ps(zmm_reg[12], zmm_reg[0], zmm_reg[1]);
-            vpermi2ps(zmm_reg[13], zmm_reg[0], zmm_reg[1]);
-            vaddps(zmm_reg[0], zmm_reg[12], zmm_reg[13]);
-        }
+          for (int ii = 0; ii < 8; ii++) {
+              vshuff32x4(zmm_reg[ii + 16], zmm_reg[ii], zmm_reg[ii + 8],
+                      0b01000100);
+              if (ii == 7) {
+                  vshuff32x4(zmm_reg[30], zmm_reg[ii], zmm_reg[ii + 8],
+                          0b11101110);
+                  vaddps(zmm_reg[ii], zmm_reg[ii + 16], zmm_reg[30]);
+              } else {
+                  vshuff32x4(zmm_reg[ii + 16 + 1], zmm_reg[ii],
+                          zmm_reg[ii + 8], 0b11101110);
+                  vaddps(zmm_reg[ii], zmm_reg[ii + 16], zmm_reg[ii + 16 + 1]);
+              }
+          }
+          vmovups(zmm_reg[8], perm[0]);
+          vmovups(zmm_reg[9], perm[1]);
+          for (int ii = 0; ii < 4; ii++) {
+              vmovaps(zmm_reg[10], zmm_reg[8]);
+              vmovaps(zmm_reg[11], zmm_reg[9]);
+              vpermi2ps(zmm_reg[10], zmm_reg[ii], zmm_reg[ii + 4]);
+              vpermi2ps(zmm_reg[11], zmm_reg[ii], zmm_reg[ii + 4]);
+              vaddps(zmm_reg[ii], zmm_reg[10], zmm_reg[11]);
+          }
+          for (int ii = 0; ii < 2; ii++) {
+              vshufpd(zmm_reg[10], zmm_reg[ii], zmm_reg[ii + 2], 0b00000000);
+              vshufpd(zmm_reg[11], zmm_reg[ii], zmm_reg[ii + 2], 0b11111111);
+              vaddps(zmm_reg[ii], zmm_reg[10], zmm_reg[11]);
+          }
+          vmovups(zmm_reg[12], perm[2]);
+          vmovups(zmm_reg[13], perm[3]);
+          vpermi2ps(zmm_reg[12], zmm_reg[0], zmm_reg[1]);
+          vpermi2ps(zmm_reg[13], zmm_reg[0], zmm_reg[1]);
+          vaddps(zmm_reg[0], zmm_reg[12], zmm_reg[13]);
+      }
 
-        if (numN == 3) {
-            // 8-way reduction and store to zmm_reg[16]
-            // zmm_reg[0-7] stores values to be reduced.
-            for (int ii = 0; ii < 8; ii++) {
-                if (ii < 7) {
-                    vshuff32x4(zmm_reg[ii + 8], zmm_reg[ii], zmm_reg[ii],
-                            0b01000100);
-                    vshuff32x4(zmm_reg[ii + 9], zmm_reg[ii], zmm_reg[ii],
-                            0b11101110);
-                    vaddps(zmm_reg[ii + 16], zmm_reg[ii + 8], zmm_reg[ii + 9]);
-                } else {
-                    vshuff32x4(
-                            zmm_reg[30], zmm_reg[ii], zmm_reg[ii], 0b01000100);
-                    vshuff32x4(
-                            zmm_reg[31], zmm_reg[ii], zmm_reg[ii], 0b11101110);
-                    vaddps(zmm_reg[ii + 16], zmm_reg[30], zmm_reg[31]);
-                }
-            }
-            vmovups(zmm_reg[8], perm[0]);
-            vmovups(zmm_reg[9], perm[1]);
-            for (int ii = 0; ii < 4; ii++) {
-                vmovaps(zmm_reg[10], zmm_reg[8]);
-                vmovaps(zmm_reg[11], zmm_reg[9]);
-                vpermi2ps(zmm_reg[10], zmm_reg[ii + 16], zmm_reg[ii + 16 + 4]);
-                vpermi2ps(zmm_reg[11], zmm_reg[ii + 16], zmm_reg[ii + 16 + 4]);
-                vaddps(zmm_reg[ii + 16], zmm_reg[10], zmm_reg[11]);
-            }
-            for (int ii = 0; ii < 2; ii++) {
-                vshufpd(zmm_reg[10], zmm_reg[ii + 16], zmm_reg[ii + 16 + 2],
-                        0b00000000);
-                vshufpd(zmm_reg[11], zmm_reg[ii + 16], zmm_reg[ii + 16 + 2],
-                        0b11111111);
-                vaddps(zmm_reg[ii + 16], zmm_reg[10], zmm_reg[11]);
-            }
-            vmovups(zmm_reg[12], perm[2]);
-            vmovups(zmm_reg[13], perm[3]);
-            vpermi2ps(zmm_reg[12], zmm_reg[16], zmm_reg[17]);
-            vpermi2ps(zmm_reg[13], zmm_reg[16], zmm_reg[17]);
-            vaddps(zmm_reg[16], zmm_reg[12], zmm_reg[13]);
-        }
-    }
+      if (numN == 3) {
+          // 8-way reduction and store to zmm_reg[16]
+          // zmm_reg[0-7] stores values to be reduced.
+          for (int ii = 0; ii < 8; ii++) {
+              if (ii < 7) {
+                  vshuff32x4(zmm_reg[ii + 8], zmm_reg[ii], zmm_reg[ii],
+                          0b01000100);
+                  vshuff32x4(zmm_reg[ii + 9], zmm_reg[ii], zmm_reg[ii],
+                          0b11101110);
+                  vaddps(zmm_reg[ii + 16], zmm_reg[ii + 8], zmm_reg[ii + 9]);
+              } else {
+                  vshuff32x4(
+                          zmm_reg[30], zmm_reg[ii], zmm_reg[ii], 0b01000100);
+                  vshuff32x4(
+                          zmm_reg[31], zmm_reg[ii], zmm_reg[ii], 0b11101110);
+                  vaddps(zmm_reg[ii + 16], zmm_reg[30], zmm_reg[31]);
+              }
+          }
+          vmovups(zmm_reg[8], perm[0]);
+          vmovups(zmm_reg[9], perm[1]);
+          for (int ii = 0; ii < 4; ii++) {
+              vmovaps(zmm_reg[10], zmm_reg[8]);
+              vmovaps(zmm_reg[11], zmm_reg[9]);
+              vpermi2ps(zmm_reg[10], zmm_reg[ii + 16], zmm_reg[ii + 16 + 4]);
+              vpermi2ps(zmm_reg[11], zmm_reg[ii + 16], zmm_reg[ii + 16 + 4]);
+              vaddps(zmm_reg[ii + 16], zmm_reg[10], zmm_reg[11]);
+          }
+          for (int ii = 0; ii < 2; ii++) {
+              vshufpd(zmm_reg[10], zmm_reg[ii + 16], zmm_reg[ii + 16 + 2],
+                      0b00000000);
+              vshufpd(zmm_reg[11], zmm_reg[ii + 16], zmm_reg[ii + 16 + 2],
+                      0b11111111);
+              vaddps(zmm_reg[ii + 16], zmm_reg[10], zmm_reg[11]);
+          }
+          vmovups(zmm_reg[12], perm[2]);
+          vmovups(zmm_reg[13], perm[3]);
+          vpermi2ps(zmm_reg[12], zmm_reg[16], zmm_reg[17]);
+          vpermi2ps(zmm_reg[13], zmm_reg[16], zmm_reg[17]);
+          vaddps(zmm_reg[16], zmm_reg[12], zmm_reg[13]);
+      }
+  }
 
-    void kloop(bool krem, Xbyak::Address &ALPHA, int MROW) {
-        mov(AO2, AO1); // AO2 temporary.
-        // Load 1,2,3 or 4 column(s) of B
-        if (krem) {
-            vpxorq(zmm_reg[15], zmm_reg[15], zmm_reg[15]);
-            if (numN > 1) vpxorq(zmm_reg[14], zmm_reg[14], zmm_reg[14]);
-            if (numN > 2) vpxorq(zmm_reg[13], zmm_reg[13], zmm_reg[13]);
-            if (numN > 3) vpxorq(zmm_reg[12], zmm_reg[12], zmm_reg[12]);
-        }
-        vmovups(zmm_reg[15] | (krem ? k_rem : k0), ptr[BO1]);
-        if (numN > 1)
-            vmovups(zmm_reg[14] | (krem ? k_rem : k0), ptr[BO1 + LDB]);
-        if (numN > 2)
-            vmovups(zmm_reg[13] | (krem ? k_rem : k0), ptr[BO1 + LDB * 2]);
-        if (numN > 3) vmovups(zmm_reg[12] | (krem ? k_rem : k0), ptr[BO2]);
+  void kloop(bool krem, Xbyak::Address &ALPHA, int MROW) {
+      mov(AO2, AO1); // AO2 temporary.
+      // Load 1,2,3 or 4 column(s) of B
+      if (krem) {
+          vpxorq(zmm_reg[15], zmm_reg[15], zmm_reg[15]);
+          if (numN > 1) vpxorq(zmm_reg[14], zmm_reg[14], zmm_reg[14]);
+          if (numN > 2) vpxorq(zmm_reg[13], zmm_reg[13], zmm_reg[13]);
+          if (numN > 3) vpxorq(zmm_reg[12], zmm_reg[12], zmm_reg[12]);
+      }
+      vmovups(zmm_reg[15] | (krem ? k_rem : k0), ptr[BO1]);
+      if (numN > 1)
+          vmovups(zmm_reg[14] | (krem ? k_rem : k0), ptr[BO1 + LDB]);
+      if (numN > 2)
+          vmovups(zmm_reg[13] | (krem ? k_rem : k0), ptr[BO1 + LDB * 2]);
+      if (numN > 3) vmovups(zmm_reg[12] | (krem ? k_rem : k0), ptr[BO2]);
 
-        if (isAlphaN) {
-            vmulps(zmm_reg[15], zmm_reg[15], ALPHA);
-            if (numN > 1) vmulps(zmm_reg[14], zmm_reg[14], ALPHA);
-            if (numN > 2) vmulps(zmm_reg[13], zmm_reg[13], ALPHA);
-            if (numN > 3) vmulps(zmm_reg[12], zmm_reg[12], ALPHA);
-        }
+      if (isAlphaN) {
+          vmulps(zmm_reg[15], zmm_reg[15], ALPHA);
+          if (numN > 1) vmulps(zmm_reg[14], zmm_reg[14], ALPHA);
+          if (numN > 2) vmulps(zmm_reg[13], zmm_reg[13], ALPHA);
+          if (numN > 3) vmulps(zmm_reg[12], zmm_reg[12], ALPHA);
+      }
 
-        // Load 16 rows of A
-        if (numN == 4) {
-            /**
-             * zmm_reg[12-15] stores B values
-             * zmm_reg[8-11] stores accumulators values
-             */
-            int endval = (MROW < 4) ? MROW : 4;
+      // Load 16 rows of A
+      if (numN == 4) {
+          /**
+           * zmm_reg[12-15] stores B values
+           * zmm_reg[8-11] stores accumulators values
+           */
+          int endval = (MROW < 4) ? MROW : 4;
 
-            for (int ii = 0; ii < endval; ii++) {
-                vmovups(zmm_reg[ii + 8], TEMPZMM[ii]);
-            }
-            for (int ii = 0; ii < endval; ii++) {
-                vfmadd231ps(zmm_reg[ii + 8] | (krem ? k_rem : k0), zmm_reg[12],
-                        ptr[AO2]);
-                vfmadd231ps(zmm_reg[16 + ii] | (krem ? k_rem : k0), zmm_reg[15],
-                        ptr[AO2]);
-                vfmadd231ps(zmm_reg[16 + 8 + ii] | (krem ? k_rem : k0),
-                        zmm_reg[14], ptr[AO2]);
-                vfmadd231ps(zmm_reg[ii] | (krem ? k_rem : k0), zmm_reg[13],
-                        ptr[AO2]);
-                vmovups(TEMPZMM[ii], zmm_reg[ii + 8]);
-                add(AO2, LDA);
-            }
-            if (MROW > 4) {
-                MROW -= 4;
-                for (int ii = 0; ii < MROW; ii++)
-                    vmovups(zmm_reg[ii + 8], TEMPZMM[ii + 4]);
-                for (int ii = 4; ii < 4 + MROW; ii++) {
-                    vfmadd231ps(zmm_reg[ii + 4] | (krem ? k_rem : k0),
-                            zmm_reg[12], ptr[AO2]);
-                    vfmadd231ps(zmm_reg[16 + ii] | (krem ? k_rem : k0),
-                            zmm_reg[15], ptr[AO2]);
-                    vfmadd231ps(zmm_reg[16 + 8 + ii] | (krem ? k_rem : k0),
-                            zmm_reg[14], ptr[AO2]);
-                    vfmadd231ps(zmm_reg[ii] | (krem ? k_rem : k0), zmm_reg[13],
-                            ptr[AO2]);
-                    vmovups(TEMPZMM[ii], zmm_reg[ii + 4]);
-                    add(AO2, LDA);
-                }
-            }
-        }
-        if (numN == 3) {
-            /**
-             * zmm_reg[13-15] stores B values
-             * zmm_reg[8-12] stores A values
-             */
-            int endval = (MROW < 5) ? MROW : 5;
-            for (int ii = 8; ii < 8 + endval; ii++) {
-                // Storing A values in zmm_reg[8-12]
-                vmovups(zmm_reg[ii] | (krem ? k_rem : k0), ptr[AO2]);
+          for (int ii = 0; ii < endval; ii++) {
+              vmovups(zmm_reg[ii + 8], TEMPZMM[ii]);
+          }
+          for (int ii = 0; ii < endval; ii++) {
+              vfmadd231ps(zmm_reg[ii + 8] | (krem ? k_rem : k0), zmm_reg[12],
+                      ptr[AO2]);
+              vfmadd231ps(zmm_reg[16 + ii] | (krem ? k_rem : k0), zmm_reg[15],
+                      ptr[AO2]);
+              vfmadd231ps(zmm_reg[16 + 8 + ii] | (krem ? k_rem : k0),
+                      zmm_reg[14], ptr[AO2]);
+              vfmadd231ps(zmm_reg[ii] | (krem ? k_rem : k0), zmm_reg[13],
+                      ptr[AO2]);
+              vmovups(TEMPZMM[ii], zmm_reg[ii + 8]);
+              add(AO2, LDA);
+          }
+          if (MROW > 4) {
+              MROW -= 4;
+              for (int ii = 0; ii < MROW; ii++)
+                  vmovups(zmm_reg[ii + 8], TEMPZMM[ii + 4]);
+              for (int ii = 4; ii < 4 + MROW; ii++) {
+                  vfmadd231ps(zmm_reg[ii + 4] | (krem ? k_rem : k0),
+                          zmm_reg[12], ptr[AO2]);
+                  vfmadd231ps(zmm_reg[16 + ii] | (krem ? k_rem : k0),
+                          zmm_reg[15], ptr[AO2]);
+                  vfmadd231ps(zmm_reg[16 + 8 + ii] | (krem ? k_rem : k0),
+                          zmm_reg[14], ptr[AO2]);
+                  vfmadd231ps(zmm_reg[ii] | (krem ? k_rem : k0), zmm_reg[13],
+                          ptr[AO2]);
+                  vmovups(TEMPZMM[ii], zmm_reg[ii + 4]);
+                  add(AO2, LDA);
+              }
+          }
+      }
+      if (numN == 3) {
+          /**
+           * zmm_reg[13-15] stores B values
+           * zmm_reg[8-12] stores A values
+           */
+          int endval = (MROW < 5) ? MROW : 5;
+          for (int ii = 8; ii < 8 + endval; ii++) {
+              // Storing A values in zmm_reg[8-12]
+                vmovups(zmm_reg[ii] | (krem ? k_rem : k0) | T_z, ptr[AO2]);
                 add(AO2, LDA);
             }
             for (int ii = 0; ii < endval; ii++) {
@@ -614,7 +614,7 @@ struct xbyak_gemm_smalln_tn : public jit_generator {
                     ? 8
                     : MROW; // Do not process more than 8 rows here.
             for (int ii = 0; ii < MROW2; ii++) {
-                vmovups(zmm_reg[ii] | (krem ? k_rem : k0), ptr[AO2]);
+                vmovups(zmm_reg[ii] | (krem ? k_rem : k0) | T_z, ptr[AO2]);
                 add(AO2, LDA);
             }
             for (int ii = 0; ii < MROW2; ii++) {
@@ -627,7 +627,7 @@ struct xbyak_gemm_smalln_tn : public jit_generator {
             if (MROW > 8) {
                 vmovaps(zmm_reg[0], zmm_reg[15]);
                 for (int ii = 8; ii < MROW; ii++) {
-                    vmovups(zmm_reg[ii] | (krem ? k_rem : k0), ptr[AO2]);
+                    vmovups(zmm_reg[ii] | (krem ? k_rem : k0) | T_z, ptr[AO2]);
                     add(AO2, LDA);
                 }
                 for (int ii = 8; ii < MROW; ii++)

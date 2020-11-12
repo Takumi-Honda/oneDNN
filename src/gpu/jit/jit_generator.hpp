@@ -87,6 +87,7 @@ template <gpu_gen_t hw>
 class jit_generator : public ngen::OpenCLCodeGenerator<hw>,
                       public jit_generator_base {
 private:
+#ifdef CL_VERSION_2_0
     struct svm_deleter {
         cl_context context_;
 
@@ -95,23 +96,18 @@ private:
         }
     };
     std::unique_ptr<void, svm_deleter> dbg_memory_ = nullptr;
+#endif
 
 public:
     jit_generator() = default;
 
-    std::vector<unsigned char> get_binary(
-            cl_context context, cl_device_id device) override {
-        return ngen::OpenCLCodeGenerator<hw>::getBinary(context, device);
-    }
-
-    const char *kernel_name() const override {
-        return ngen::OpenCLCodeGenerator<hw>::getExternalName().c_str();
-    }
-
+#ifdef CL_VERSION_2_0
     void dbg_alloc(cl_context context);
     void *dbg_memory() const { return dbg_memory_.get(); }
+#endif
 };
 
+#ifdef CL_VERSION_2_0
 template <gpu_gen_t hw>
 void jit_generator<hw>::dbg_alloc(cl_context context) {
     constexpr size_t size = 1048576;
@@ -120,6 +116,7 @@ void jit_generator<hw>::dbg_alloc(cl_context context) {
     dbg_memory_ = decltype(dbg_memory_)(mem, svm_deleter {context});
     memset(mem, 0xcd, size);
 }
+#endif
 
 } // namespace jit
 } // namespace gpu
