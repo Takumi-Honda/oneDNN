@@ -1,5 +1,6 @@
 /*******************************************************************************
-* Copyright 2019-2020 Intel Corporation
+* Copyright 2019-2021 Intel Corporation
+* Copyright 2021 FUJITSU LIMITED
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -45,12 +46,11 @@
 #include "common/utils.hpp"
 #include "common/verbose.hpp"
 
-#include "cpu/x64/jit_utils/linux_perf/linux_perf.hpp"
+#include "cpu/jit_utils/linux_perf/linux_perf.hpp"
 
 namespace dnnl {
 namespace impl {
 namespace cpu {
-namespace x64 {
 namespace jit_utils {
 
 class linux_perf_jitdump_t {
@@ -185,16 +185,24 @@ private:
     }
 
     static uint64_t get_timestamp(bool use_tsc) {
+#if DNNL_X64
         if (use_tsc) {
             uint32_t hi, lo;
             asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
             return (((uint64_t)hi) << 32) | lo;
-        } else {
-            struct timespec ts;
-            int rc = clock_gettime(CLOCK_MONOTONIC, &ts);
-            if (rc) return 0;
-            return (ts.tv_sec * 1000000000UL) + ts.tv_nsec;
         }
+#else
+        if (use_tsc) {
+            fprintf(stderr,
+                    "TSC timestamps is not supported. clock_gettime() is used "
+                    "instead.\n");
+        }
+#endif
+
+        struct timespec ts;
+        int rc = clock_gettime(CLOCK_MONOTONIC, &ts);
+        if (rc) return 0;
+        return (ts.tv_sec * 1000000000UL) + ts.tv_nsec;
     }
 
     static pid_t gettid() {
@@ -352,7 +360,6 @@ void linux_perf_perfmap_record_code_load(
 }
 
 } // namespace jit_utils
-} // namespace x64
 } // namespace cpu
 } // namespace impl
 } // namespace dnnl

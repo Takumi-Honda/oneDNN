@@ -21,12 +21,12 @@ At build-time, support for this feature is controlled via cmake option
 When the feature is enabled at build-time, the `DNNL_JIT_PROFILE` environment
 variable can be used to manage integration with performance profilers.
 
-| Environment variable | Value            | Description
-| :---                 | :---             | :---
-| DNNL_JIT_PROFILE     | **1**            | **Enables VTune Amplifier integration (default)**
-|                      | 2                | Enables basic Linux perf integration
-|                      | 6                | Enables Linux perf integration with JIT dump output
-|                      | 14               | Enables Linux perf integration with JIT dump output and TSC timestamps
+| Environment variable | Value            | Description                                                            | x64            | AArch64
+| :---                 | :---             | :---                                                                   | :---           | :---
+| DNNL_JIT_PROFILE     | 1                | Enables VTune Amplifier integration                                    | **x(default)** | **N/A(default)**
+|                      | 2                | Enables basic Linux perf integration                                   | x              | x
+|                      | 6                | Enables Linux perf integration with JIT dump output                    | x              | x
+|                      | 14               | Enables Linux perf integration with JIT dump output and TSC timestamps | x              | N/A
 
 Other valid values for `DNNL_JIT_PROFILE` include integer values representing
 a combination of flags accepted by the @ref dnnl_set_jit_profiling_flags
@@ -42,8 +42,7 @@ This feature can also be managed at run-time with the following functions:
 
 Function settings take precedence over environment variables.
 
-### Features for VTune Amplifer 
-
+### Features for VTune Amplifier
 
 #### ITT Tagging for Primitive Execution
 
@@ -52,9 +51,9 @@ performance information on the level of a oneDNN primitive. This feature is
 supported on both CPU and GPU.
 
 ITT tagging in oneDNN during primitive execution provides more information 
-from VTune for the items below.
-1. Get the primitives timeline chart from VTune, and identify any protential
-   performance issue.
+from VTune Amplifier for the items below.
+1. Get the primitives timeline chart from VTune Amplifier, and identify
+potential performance issues.
 2. Get platform information such as an L1/L2 cache miss or level of FP
    vectorization on the primitive level.
 3. Map primitive with related computation kernels.

@@ -26,13 +26,15 @@
 
 #include "cpu/aarch64/cpu_isa_traits.hpp"
 
-#include "cpu/aarch64/jit_utils/jit_utils.hpp"
+#include "cpu/jit_utils/jit_utils.hpp"
 
 #define STRUCT_ALIGN(al, ...) __VA_ARGS__ __attribute__((__aligned__(al)))
 
 #define DECLARE_CPU_JIT_AUX_FUNCTIONS(jit_name) \
     const char *name() const override { return STRINGIFY(jit_name); } \
     const char *source_file() const override { return __FILE__; }
+
+static const size_t CSIZE = sizeof(uint32_t);
 
 namespace dnnl {
 namespace impl {
@@ -230,8 +232,7 @@ public:
         if (dstIdx == src2Idx) {
             assert(tmpIdx != srcIdx && tmpIdx != src2Idx);
 
-            mov(Xbyak_aarch64::ZRegD(tmp.getIdx()),
-                    Xbyak_aarch64::ZRegD(src2.getIdx()));
+            mov(Xbyak_aarch64::ZRegD(tmpIdx), Xbyak_aarch64::ZRegD(src2Idx));
             mov(dst, pred / Xbyak_aarch64::T_m, src);
             fdiv(dst, pred / Xbyak_aarch64::T_m, tmp);
         } else if (dstIdx == srcIdx) {
@@ -371,7 +372,7 @@ private:
         if (!is_initialized()) return nullptr;
         const uint8_t *code
                 = reinterpret_cast<const uint8_t *>(CodeGenerator::getCode());
-        register_jit_code(code, getSize());
+        register_jit_code(code, getSize() * CSIZE);
         return code;
     }
 
