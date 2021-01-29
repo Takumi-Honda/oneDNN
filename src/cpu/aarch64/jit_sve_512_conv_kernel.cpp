@@ -3981,10 +3981,6 @@ status_t jit_sve_512_conv_bwd_weights_kernel_f32::init_conf(
     if (ndims == 5)
         if (jcp.dilate_d > 0) return status::unimplemented;
 
-    /* Set bounds for large filter 'kw > 14' support and optimized JIT
-     * implementation for small output-width 'ow = 1' */
-    const int min_filter_size = 14;
-    const int max_filter_size = 20;
     const auto dat_tag_nxc = pick(ndims - 3, nwc, nhwc, ndhwc);
     const auto dat_tag_ncx = pick(ndims - 3, ncw, nchw, ncdhw);
     const auto dat_tag_nCx16c = pick(ndims - 3, nCw16c, nChw16c, nCdhw16c);

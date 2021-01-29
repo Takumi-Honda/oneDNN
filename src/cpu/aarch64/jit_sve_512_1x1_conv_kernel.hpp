@@ -22,14 +22,13 @@
 #include "common/memory_tracking.hpp"
 
 #include "cpu/aarch64/jit_generator.hpp"
-#include "cpu/aarch64/jit_primitive_conf.hpp"
 #include "cpu/aarch64/jit_op_imm_check.hpp"
+#include "cpu/aarch64/jit_primitive_conf.hpp"
 
 #define DISABLE_ELTWISE
 #ifndef DISABLE_ELTWISE
 #include "cpu/aarch64/jit_uni_eltwise_injector.hpp"
 #endif
-
 
 using namespace Xbyak_aarch64;
 
@@ -157,7 +156,7 @@ private:
                 default: assert(!"invalid prfop"); break;
             }
 
-            if(prfw_imm_check(ofs)){
+            if (prfw_imm_check(ofs)) {
                 prfw(op_sve, reg_p_all_ones,
                         ptr(in, static_cast<int32_t>(VL64_OFS(ofs))));
             } else {
