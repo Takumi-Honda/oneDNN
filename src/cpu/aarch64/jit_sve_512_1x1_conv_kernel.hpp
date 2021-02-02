@@ -116,7 +116,7 @@ private:
 
     void prefetch(
             const std::string prfop, int level, reg64_t in, long long int ofs) {
-        bool for_load;
+        bool for_load = false;
         if (prfop == "LD") {
             for_load = true;
         } else if (prfop == "ST") {
@@ -125,8 +125,8 @@ private:
             assert(!"invalid prfop");
         }
 
-        bool cacheline_alinged = ((ofs & 0xFF) == 0) ? true : false;
-        if (cacheline_alinged == true) {
+        bool cacheline_aligned = ((ofs & 0xFF) == 0) ? true : false;
+        if (cacheline_aligned == true) {
             Prfop op;
             switch (level) {
                 case 1: op = (for_load == true) ? PLDL1KEEP : PSTL1KEEP; break;
