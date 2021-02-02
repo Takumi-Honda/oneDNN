@@ -292,7 +292,7 @@ struct rtus_driver_t : public jit_generator {
 
     void loop_is_nspc() {}
 
-    void generate() {
+    void generate() override {
         using namespace Xbyak_aarch64;
         assert(isa == sve_512);
 
