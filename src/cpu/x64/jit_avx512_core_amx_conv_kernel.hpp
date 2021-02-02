@@ -17,6 +17,8 @@
 #ifndef CPU_X64_JIT_AVX512_CORE_AMX_CONV_KERNEL_HPP
 #define CPU_X64_JIT_AVX512_CORE_AMX_CONV_KERNEL_HPP
 
+#include <queue>
+
 #include "common/c_types_map.hpp"
 #include "common/memory_tracking.hpp"
 
@@ -276,10 +278,17 @@ private:
         zmm_idx_limit_int8 = 27,
     };
 
-    int prv_width_;
-    int row_count_;
-    bool is_store_done_;
-    bool is_buffer_empty_;
+    int prv_width_ = 0;
+    int row_count_ = 0;
+    bool is_store_done_ = false;
+    bool is_buffer_empty_ = true;
+
+    struct w_pad_output {
+        int l_pad_output;
+        int r_pad_output;
+        w_pad_output(int l_, int r_) : l_pad_output(l_), r_pad_output(r_) {}
+    };
+    std::queue<w_pad_output> w_padding;
 
     /* data regs */
     const Xbyak::Reg64 &reg_inp_ptr = r15;
@@ -380,9 +389,16 @@ private:
             const bool compute_zp = false, const int zp_h = 0,
             const int zp_w = 0);
     void store_output(int width, int tail, bool do_store,
-            const int l_pad_output, const int r_pad_output);
-    void interleave_store(int width);
-    void compute_icb_loop(int width, bool do_store, const int l_pad_output,
+            const bool handle_h_block, const int t_pad_output,
+            const int b_pad_output, const int l_pad_output,
+            const int r_pad_output, const bool is_last_oh_block);
+    void interleave_store(
+            int width, int const t_pad_output, int const b_pad_output);
+    void compute_icb_loop(int width, bool do_store, const bool handle_h_block,
+            const int t_pad_output, const int b_pad_output,
+            const int l_pad_output, const int r_pad_output,
+            const bool is_last_oh_block = false);
+    void dispatch_icb_loop(int width, bool do_store, const int l_pad_output,
             const int r_pad_output);
     void compute_ow_loop();
 
@@ -483,10 +499,10 @@ private:
     jit_uni_eltwise_injector_f32<avx512_common> *eltwise_injector_;
     jit_avx512_core_amx_bwd_data_copy_kernel_t *bwd_data_copy_kernel_;
 
-    int prv_width_;
-    int row_count_;
-    bool is_store_done_;
-    bool is_buffer_empty_;
+    int prv_width_ = 0;
+    int row_count_ = 0;
+    bool is_store_done_ = false;
+    bool is_buffer_empty_ = true;
 
     /* data regs */
     const Xbyak::Reg64 &reg_inp_ptr = r15;

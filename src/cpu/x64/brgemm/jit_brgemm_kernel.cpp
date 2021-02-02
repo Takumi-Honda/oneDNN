@@ -222,8 +222,8 @@ private:
     int compensations_offset(int ld, bool is_tail = false);
     int scales_offset(int ld, bool is_tail = false);
 
-    bool n_bcast_1_load;
-    bool vpad_exist;
+    bool n_bcast_1_load = false;
+    bool vpad_exist = false;
 };
 
 int jit_brgemm_kernel_base_t::A_offset(int bd, int rd, bool is_amx) {
@@ -1353,13 +1353,6 @@ void jit_brgemm_kernel_base_t::generate() {
     kmovq(ld_tail_mask, reg_mask);
 
     read_params();
-
-    if (!n_bcast_1_load) {
-        if (!brg.embd_bcst && (brg.is_bf16 || brg.is_int8)) {
-            auto zmm_tmp = bcst();
-            vpxord(zmm_tmp, zmm_tmp, zmm_tmp);
-        }
-    }
 
     bdb_loop();
 
