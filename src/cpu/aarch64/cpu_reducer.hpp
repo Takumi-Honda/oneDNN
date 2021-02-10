@@ -29,6 +29,7 @@
 #include "dnnl_types.h"
 
 #include "cpu/aarch64/cpu_barrier.hpp"
+#include "cpu/aarch64/jit_op_imm_check.hpp"
 
 namespace dnnl {
 namespace impl {

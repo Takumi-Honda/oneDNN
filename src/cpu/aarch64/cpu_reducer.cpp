@@ -129,6 +129,10 @@ struct reducer_2d_driver_f_s_32_t : public reducer_2d_driver_t<data_type> {
         jit_generator::operator()(dst, srcs, ny, nx);
     }
 
+    size_t ld_prev_off = -1;
+    int ld_reg_idx = -1;
+    size_t st_prev_off = -1;
+    int st_reg_idx = -1;
     /* cpu specific part */
     using Vmm = Xbyak_aarch64::ZRegS;
 
@@ -144,6 +148,8 @@ struct reducer_2d_driver_f_s_32_t : public reducer_2d_driver_t<data_type> {
     XReg reg_src_id = this->x20;
     XReg reg_long_offt = this->x21;
 
+    XReg reg_ld_prev = this->x27;
+    XReg reg_st_prev = this->x28;
     XReg reg_tmp_imm = this->x29;
     XReg reg_tmp_ptr = this->x30;
 
@@ -156,26 +162,69 @@ struct reducer_2d_driver_f_s_32_t : public reducer_2d_driver_t<data_type> {
                 n_src, src_ld, src_step, dst_step, nullify_dst) {}
 
     void uni_load(const Vmm &z1, const XReg &src, size_t off, int load_len) {
-        auto src_ptr = (off == 0) ? src : reg_tmp_ptr;
-        if (off != 0) this->add_imm(src_ptr, src, off, reg_tmp_imm);
 
-        if (load_len == typesize)
+        if (load_len == vlen) {
+            if (ld_reg_idx != src.getIdx()) {
+                ld_reg_idx = src.getIdx();
+                ld_prev_off = -1;
+            }
+            if (ld1w_imm_check(off)) {
+                int vlen_shift = cpu_isa_traits<sve_512>::vlen_shift;
+                this->ld1w(z1, preg_all.s,
+                        ptr(src, static_cast<int32_t>(off >> vlen_shift)));
+            } else {
+                if (ld_prev_off != -1 && (ld1w_imm_check(off - ld_prev_off))) {
+                    int vlen_shift = cpu_isa_traits<sve_512>::vlen_shift;
+                    this->ld1w(z1, preg_all.s,
+                            ptr(reg_ld_prev,
+                                    static_cast<int32_t>((off - ld_prev_off)
+                                            >> vlen_shift)));
+                } else {
+                    ld_prev_off = off;
+                    if (off != 0)
+                        this->add_imm(reg_ld_prev, src, off, reg_tmp_imm);
+                    this->ld1w(z1, preg_all.s, ptr(reg_ld_prev));
+                }
+            }
+        } else if (load_len == typesize) {
+            auto src_ptr = (off == 0) ? src : reg_tmp_ptr;
+            if (off != 0) this->add_imm(src_ptr, src, off, reg_tmp_imm);
             this->ld1w(z1, preg_one.s, ptr(src_ptr));
-        else if (load_len == vlen)
-            this->ld1w(z1, preg_all.s, ptr(src_ptr));
-        else
+        } else
             assert(!"unsupported");
     }
 
     void uni_store(const Vmm &z1, const XReg &dst, size_t off, int load_len) {
-        auto dst_ptr = (off == 0) ? dst : reg_tmp_ptr;
-        if (off != 0) this->add_imm(dst_ptr, dst, off, reg_tmp_imm);
 
-        if (load_len == typesize)
+        if (load_len == vlen) {
+            if (st_reg_idx != dst.getIdx()) {
+                st_reg_idx = dst.getIdx();
+                st_prev_off = -1;
+            }
+
+            if (st1w_imm_check(off)) {
+                int vlen_shift = cpu_isa_traits<sve_512>::vlen_shift;
+                this->st1w(z1, preg_all.s,
+                        ptr(dst, static_cast<int32_t>(off >> vlen_shift)));
+            } else {
+                if (st_prev_off != -1 && (st1w_imm_check(off - st_prev_off))) {
+                    int vlen_shift = cpu_isa_traits<sve_512>::vlen_shift;
+                    this->st1w(z1, preg_all.s,
+                            ptr(reg_st_prev,
+                                    static_cast<int32_t>((off - st_prev_off)
+                                            >> vlen_shift)));
+                } else {
+                    st_prev_off = off;
+                    if (off != 0)
+                        this->add_imm(reg_st_prev, dst, off, reg_tmp_imm);
+                    this->st1w(z1, preg_all.s, ptr(reg_st_prev));
+                }
+            }
+        } else if (load_len == typesize) {
+            auto dst_ptr = (off == 0) ? dst : reg_tmp_ptr;
+            if (off != 0) this->add_imm(dst_ptr, dst, off, reg_tmp_imm);
             this->st1w(z1, preg_one.s, ptr(dst_ptr));
-        else if (load_len == vlen)
-            this->st1w(z1, preg_all.s, ptr(dst_ptr));
-        else
+        } else
             assert(!"unsupported");
     }
 

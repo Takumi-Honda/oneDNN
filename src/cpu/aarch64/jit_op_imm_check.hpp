@@ -6,6 +6,8 @@
 #define STRMAX 255
 #define STRMIN (-256)
 #define LD1RWMAX 252
+#define LD1WMIN (-8)
+#define LD1WMAX 7
 #define PRFMMAX 32760
 #define PRFMMIN 0
 #define PRFWMAX 31
@@ -44,6 +46,23 @@ bool str_imm_check(T ofs) {
 template <typename T>
 bool ld1rw_imm_check(T ofs) {
     return ((ofs & 0x3) == 0) && (ofs <= LD1RWMAX) && (ofs >= 0);
+}
+
+template <typename T>
+bool ld1w_imm_check(T ofs) {
+    int vlen = cpu_isa_traits<sve_512>::vlen;
+    int vlen_shift = cpu_isa_traits<sve_512>::vlen_shift;
+    int shifted_ofs = ofs >> vlen_shift;
+    return ((shifted_ofs) <= LD1WMAX) && (shifted_ofs >= LD1WMIN)
+            && ((ofs % vlen) == 0);
+}
+template <typename T>
+bool st1w_imm_check(T ofs) {
+    int vlen = cpu_isa_traits<sve_512>::vlen;
+    int vlen_shift = cpu_isa_traits<sve_512>::vlen_shift;
+    int shifted_ofs = ofs >> vlen_shift;
+    return ((shifted_ofs) <= LD1WMAX) && (shifted_ofs >= LD1WMIN)
+            && ((ofs % vlen) == 0);
 }
 
 // Is the optional positive immediate byte offset,
