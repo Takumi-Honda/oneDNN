@@ -4197,13 +4197,9 @@ status_t jit_aarch64_sve_512_conv_bwd_weights_kernel_f32::init_conf(
         }
     }
 
-    if (jcp.ver == ver_fma) {
-        jcp.typesize_in = typesize;
-        jcp.typesize_out = typesize;
-    } else
-        return status::unimplemented;
+    jcp.typesize_in = typesize;
+    jcp.typesize_out = typesize;
 
-    bool use_nxc_harness = false;
     dim_t kernel_size
             = jcp.ic * jcp.oc * jcp.kd * jcp.kh * jcp.kw * jcp.typesize_out;
     dim_t src_size
@@ -4227,56 +4223,8 @@ status_t jit_aarch64_sve_512_conv_bwd_weights_kernel_f32::init_conf(
     if (!args_ok) return status::unimplemented;
 
     int nthr, nthr_mb, nthr_g, nthr_oc_b, nthr_ic_b;
-    if (jcp.harness == harness_nxc) {
-        // The harness_nxc is quite different from the other kernels. The
-        // init_conf function should probably be refactored so that it calls
-        // functions along the line of tune_nxc, tun_4fma, tune_fma which
-        // independently tune the kernels for each implementation with tuning
-        // common to multiple implementations performed by helper functions.
-        // This will help maintainability and help prevent the different
-        // implementations from stepping on each other.
-        int zmm_regs = 32;
-
-        // Block by ic and kw in the compute kernel to decrease loads from the
-        // src buffer
-        jcp.ur_ic = 2 - jcp.ic % 2;
-        jcp.ur_kw = 1;
-        if (jcp.stride_w == jcp.dilate_w + 1) {
-            jcp.ur_kw = jcp.kw;
-            if (jcp.kw > 7) {
-                // Blocking by kw is more effective than by ic in the compute
-                // kernel since neighbor kw operations share src data
-                jcp.ur_ic = 1;
-                if (jcp.kw > zmm_regs / (jcp.ur_ic + 1))
-                    jcp.ur_kw = jcp.kw % (zmm_regs / (jcp.ur_ic + 1));
-            }
-        }
-
-        // Unroll by ow to decrease updates to diff_weights. In practice, this
-        // should be approximately 1/4 - 1/2 of the zmm registers
-        jcp.ur_ow = nstl::min(
-                (zmm_regs - jcp.ur_kw * jcp.ur_ic) / (jcp.ur_ic + 1), jcp.ow);
-
-        int work_amount_base = jcp.mb * jcp.od * jcp.oh;
-        int ow_iter = div_up(jcp.ow, jcp.ur_ow);
-        int nthr_ow = nstl::min(
-                jcp.nthr / math::gcd(work_amount_base, jcp.nthr), ow_iter);
-        int ow_block = div_up(ow_iter, nthr_ow) * jcp.ur_ow;
-
-        jcp.ow_block = ow_block;
-        jcp.nb_ow = div_up(jcp.ow, jcp.ow_block);
-
-        // Choose a simple parallelization method. A more advance may need made
-        // later
-        int work_amount = jcp.mb * jcp.od * jcp.oh * jcp.nb_ow;
-        nthr_mb = nstl::min(jcp.nthr, work_amount);
-        nthr_g = 1;
-        nthr_oc_b = 1;
-        nthr_ic_b = 1;
-        nthr = nthr_mb * nthr_g * nthr_oc_b * nthr_ic_b;
-    } else { // balancing
-        balance(jcp, nthr, nthr_mb, nthr_g, nthr_oc_b, nthr_ic_b, jcp.nthr);
-    }
+    // balancing
+    balance(jcp, nthr, nthr_mb, nthr_g, nthr_oc_b, nthr_ic_b, jcp.nthr);
 
     jcp.nthr = nthr;
     jcp.nthr_mb = nthr_mb;
