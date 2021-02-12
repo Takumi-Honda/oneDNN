@@ -4047,8 +4047,8 @@ status_t jit_aarch64_sve_512_conv_bwd_weights_kernel_f32::init_conf(
 
     /* Set bounds for large filter 'kw > 14' support and optimized JIT
      * implementation for small output-width 'ow = 1' */
-    //const int min_filter_size = 14;
-    //const int max_filter_size = 20;
+    const int min_filter_size = 14;
+    const int max_filter_size = 20;
     const auto dat_tag_nxc = pick(ndims - 3, nwc, nhwc, ndhwc);
     const auto dat_tag_ncx = pick(ndims - 3, ncw, nchw, ncdhw);
     const auto dat_tag_nCx16c = pick(ndims - 3, nCw16c, nChw16c, nCdhw16c);
@@ -4058,19 +4058,17 @@ status_t jit_aarch64_sve_512_conv_bwd_weights_kernel_f32::init_conf(
             = diff_dst_d.matches_one_of_tag(dat_tag_nxc, dat_tag_nCx16c);
     bool is_data_layout_nxc
             = utils::everyone_is(dat_tag_nxc, curr_src_tag, curr_dst_tag);
-    if (mayiuse(sve_512) && is_data_layout_nxc) return status::unimplemented;
+    if (is_data_layout_nxc) return status::unimplemented;
 
     /* Optimization: when `output-width == 1' deploy a special case of the
      * JIT-Kernel by unrolling with regards to height instead of width for
      * the source and filter tensors. The JIT-Kernel also transposes the
      * strides for the input and filter memory access. */
-    jcp.is_hw_transp = false;
-    //jcp.is_hw_transp = !is_data_layout_nxc && ndims == 4
-    //        && jcp.kw >= min_filter_size && jcp.kw < max_filter_size
-    //        && jcp.ow == 1 && jcp.kw == jcp.iw
-    //        && everyone_is(1, jcp.stride_w, jcp.stride_h)
-    //        && everyone_is(0, jcp.dilate_h, jcp.dilate_w)
-    //        && everyone_is(0, jcp.l_pad, jcp.t_pad, jcp.r_pad, jcp.b_pad);
+    jcp.is_hw_transp = ndims == 4 && jcp.kw >= min_filter_size
+            && jcp.kw < max_filter_size && jcp.ow == 1 && jcp.kw == jcp.iw
+            && everyone_is(1, jcp.stride_w, jcp.stride_h)
+            && everyone_is(0, jcp.dilate_h, jcp.dilate_w)
+            && everyone_is(0, jcp.l_pad, jcp.t_pad, jcp.r_pad, jcp.b_pad);
 
     if (jcp.is_hw_transp) {
         jcp.tr_kw = jcp.kh;
@@ -4090,18 +4088,18 @@ status_t jit_aarch64_sve_512_conv_bwd_weights_kernel_f32::init_conf(
 
     jcp.oc_block = jcp.simd_w;
 
-    bool ok_to_pad_channels = true && !is_data_layout_nxc && jcp.ngroups == 1
-            && src_d.data_type() == data_type::f32;
+    bool ok_to_pad_channels
+            = true && jcp.ngroups == 1 && src_d.data_type() == data_type::f32;
 
     if (ok_to_pad_channels) jcp.oc = rnd_up(jcp.oc, jcp.simd_w);
 
     if (!IMPLICATION(!is_data_layout_nxc, jcp.oc % jcp.oc_block == 0))
         return status::unimplemented;
 
-    jcp.ic_tail = is_data_layout_nxc ? jcp.ic % jcp.simd_w : 0;
-    jcp.oc_tail = is_data_layout_nxc ? jcp.oc % jcp.simd_w : 0;
+    jcp.ic_tail = 0;
+    jcp.oc_tail = 0;
 
-    auto dst_tag = is_data_layout_nxc ? dat_tag_nxc : dat_tag_nCx16c;
+    auto dst_tag = dat_tag_nCx16c;
     auto wei_tag = with_groups
             ? pick(ndims - 3, gOIw16i16o, gOIhw16i16o, gOIdhw16i16o)
             : pick(ndims - 3, OIw16i16o, OIhw16i16o, OIdhw16i16o);
@@ -4145,7 +4143,7 @@ status_t jit_aarch64_sve_512_conv_bwd_weights_kernel_f32::init_conf(
     }
 
     if (jcp.is_1stconv) {
-        auto src_tag = is_data_layout_nxc ? dat_tag_nxc : dat_tag_ncx;
+        auto src_tag = dat_tag_ncx;
         if (src_d.format_kind() == format_kind::any) {
             CHECK(memory_desc_init_by_tag(src_md, src_tag));
         } else {
@@ -4176,7 +4174,7 @@ status_t jit_aarch64_sve_512_conv_bwd_weights_kernel_f32::init_conf(
 
         jcp.nb_ic = div_up(jcp.ic, jcp.ic_block);
     } else {
-        auto src_tag = is_data_layout_nxc ? dat_tag_nxc : dat_tag_nCx16c;
+        auto src_tag = dat_tag_nCx16c;
         if (src_md.format_kind == format_kind::any) {
             CHECK(memory_desc_init_by_tag(src_md, src_tag));
         } else if (curr_src_tag != src_tag)
@@ -4206,37 +4204,18 @@ status_t jit_aarch64_sve_512_conv_bwd_weights_kernel_f32::init_conf(
         return status::unimplemented;
 
     bool use_nxc_harness = false;
-    if (is_data_layout_nxc && jcp.ver == ver_fma) {
-        dim_t kernel_size
-                = jcp.ic * jcp.oc * jcp.kd * jcp.kh * jcp.kw * jcp.typesize_out;
-        dim_t src_size
-                = jcp.mb * jcp.ic * jcp.id * jcp.ih * jcp.iw * jcp.typesize_in;
-        dim_t diff_dst_size
-                = jcp.mb * jcp.oc * jcp.id * jcp.ih * jcp.iw * jcp.typesize_in;
-        dim_t data_size = src_size + diff_dst_size;
+    dim_t kernel_size
+            = jcp.ic * jcp.oc * jcp.kd * jcp.kh * jcp.kw * jcp.typesize_out;
+    dim_t src_size
+            = jcp.mb * jcp.ic * jcp.id * jcp.ih * jcp.iw * jcp.typesize_in;
+    dim_t diff_dst_size
+            = jcp.mb * jcp.oc * jcp.id * jcp.ih * jcp.iw * jcp.typesize_in;
+    dim_t data_size = src_size + diff_dst_size;
 
-        // The advantage of the nxc kernel is cache traversal, this comes at a
-        // cost of extra work updating the weights buffers more often. As such,
-        // if everything fits in cache, this kernel is at a disadvantage to the
-        // inner loop over ow. More optimizing/balancing is required to
-        // determine when this is needed for multidimensional kernels because
-        // the data reuses within the kernel height/depth dimension make the
-        // computation more computationally bound and cache traversal advantage
-        // less important. Due to the current blocked weights format, the
-        // weights and the data buffers cannot both be traversed optimally, so
-        // for performance, the weights must fit in cache.
-        use_nxc_harness
-                = (data_size / nthreads + kernel_size > L2_cache_size / 3)
-                && (jcp.oc % jcp.simd_w == 0) && (jcp.ic % jcp.simd_w == 0)
-                && jcp.kw > 1 && ndims == 3
-                && (kernel_size < L2_cache_size / 2);
-    }
+    jcp.harness = ndims == 5 ? harness_3d_reduction : harness_mb_reduction;
 
-    jcp.harness = use_nxc_harness
-            ? harness_nxc
-            : ndims == 5 ? harness_3d_reduction : harness_mb_reduction;
     if (jcp.dilate_h == 0 && jcp.ndims == 4 && jcp.oh > min_oh_reduce
-            && jcp.ver == ver_fma && !jcp.is_hw_transp && !is_data_layout_nxc)
+            && !jcp.is_hw_transp)
         jcp.harness = harness_2d_reduction; // 2d harness with oh reduction
     bool args_ok = true
             && IMPLICATION(!is_data_layout_nxc,
@@ -4306,16 +4285,8 @@ status_t jit_aarch64_sve_512_conv_bwd_weights_kernel_f32::init_conf(
     jcp.nthr_ic_b = nthr_ic_b;
 
     jcp.kernel_kind = embd_bcast;
-    if (is_data_layout_nxc && jcp.stride_w == 1 && jcp.dilate_w == 0
-            && !jcp.is_1stconv) {
-        jcp.kernel_kind = expl_bcast;
-    }
 
     jcp.nb_ic_blocking_max = 1;
-    if (is_data_layout_nxc && (jcp.ow > max_ur_w || jcp.ndims == 5)) {
-        assert(!jcp.is_hw_transp);
-        jcp.nb_ic_blocking_max = nstl::min(8, div_up(jcp.nb_ic, jcp.nthr_ic_b));
-    }
 
     return status::success;
 }
