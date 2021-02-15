@@ -39,8 +39,8 @@ using namespace dnnl::impl::utils;
 namespace {
 
 constexpr auto small_spatial = 14;
-unsigned int L1_cache_size = platform::get_per_core_cache_size(1);
-unsigned int L2_cache_size = platform::get_per_core_cache_size(2);
+unsigned int L1_cache_size = 64 * 1024; //platform::get_per_core_cache_size(1);
+unsigned int L2_cache_size = 680 * 1024; //platform::get_per_core_cache_size(2);
 
 inline void pick_loop_order(jit_conv_conf_t &jcp) {
     using namespace prop_kind;
@@ -1335,19 +1335,22 @@ void _jit_aarch64_sve_512_conv_bwd_data_kernel_f32<Vmm>::compute_loop_fma(
     int stride_h = jcp.stride_h;
 
     int ker_pipeline_depth = 1;
-    assert(ker_reg_base_idx + ker_pipeline_depth <= 31);
+    assert(ker_reg_base_idx + ker_pipeline_depth
+            < cpu_isa_traits<sve_512>::n_vregs);
     assert(oc_block >= ker_pipeline_depth);
 
     int num_ker_loads = oc_block * kw;
 
     auto zreg_ker = [=](int i_ic) {
         assert(i_ic < ker_pipeline_depth);
-        assert((ker_reg_base_idx + i_ic) < 31);
+        assert((ker_reg_base_idx + i_ic)
+                < (cpu_isa_traits<sve_512>::n_vregs - 1));
         return ZReg(ker_reg_base_idx + i_ic);
     };
     auto zreg_ker_s = [=](int i_ic) {
         assert(i_ic < ker_pipeline_depth);
-        assert((ker_reg_base_idx + i_ic) < 31);
+        assert((ker_reg_base_idx + i_ic)
+                < (cpu_isa_traits<sve_512>::n_vregs - 1));
         return ZRegS(ker_reg_base_idx + i_ic);
     };
     auto zreg_out_s = [=](int i_ur, int i_oc) {
@@ -1357,8 +1360,10 @@ void _jit_aarch64_sve_512_conv_bwd_data_kernel_f32<Vmm>::compute_loop_fma(
     };
     auto zreg_in_s = [=](int idx) {
         int num_used_zreg = ker_reg_base_idx + ker_pipeline_depth;
-        int zreg_idx = (idx % (32 - num_used_zreg)) + num_used_zreg;
-        assert(zreg_idx <= 31);
+        int zreg_idx
+                = (idx % (cpu_isa_traits<sve_512>::n_vregs - num_used_zreg))
+                + num_used_zreg;
+        assert(zreg_idx < cpu_isa_traits<sve_512>::n_vregs);
         return ZRegS(zreg_idx);
     };
 
@@ -1402,9 +1407,7 @@ void _jit_aarch64_sve_512_conv_bwd_data_kernel_f32<Vmm>::compute_loop_fma(
         }
         return prev_ofs;
     };
-    auto ker_load = [=](int i, int aux_kernel_offset) {
-        int ofs = aux_kernel_offset;
-
+    auto ker_load = [=](int i, int ofs) {
         if (ldr_imm_check(ofs)) {
             ldr(zreg_ker(i),
                     Xbyak_aarch64::ptr(
@@ -1449,10 +1452,11 @@ void _jit_aarch64_sve_512_conv_bwd_data_kernel_f32<Vmm>::compute_loop_fma(
     L(kh_label);
     {
         int step = 0;
-        for (int ki = 0; ki < kw; ki++) {
-            for (int oc = 0; oc < oc_block; oc++) {
+        for (int ki = 0; ki < kw; ki++) { // Kernel width
+            for (int oc = 0; oc < oc_block; oc++) { // Output channle loop
                 if (step == 0) {
-                    for (int i = 0; i < ker_pipeline_depth; i++) {
+                    for (int i = 0; i < ker_pipeline_depth;
+                            i++) { // Load kernel elements
                         int aux_kernel_offset = typesize
                                 * ((oc + i) * oc_block
                                         + ki * ic_block * oc_block);
@@ -1487,6 +1491,7 @@ void _jit_aarch64_sve_512_conv_bwd_data_kernel_f32<Vmm>::compute_loop_fma(
                         - (ker_reg_base_idx + ker_pipeline_depth);
                 int num_bcast_pipeline = nstl::min(
                         ((jj_end - jj_start) / stride_w), bcast_pipeline_depth);
+
                 for (int jj = jj_start; jj < jj_end; jj += stride_w) {
                     assert((jj + l_pad - ki * dilate_w) % stride_w == 0);
                     if (num_bcast_pipeline > 1) {
@@ -2221,27 +2226,6 @@ status_t jit_aarch64_sve_512_conv_bwd_data_kernel_f32::init_conf(
 
     jcp.nb_ic_blocking = jcp.nb_oc_blocking = 1;
 
-    // Heuristic to optimize code size on KNX
-    bool large_code_size = (jcp.ur_w != jcp.ow)
-            && ((l_overflow <= 0 && n_oi > 0) || (l_overflow > 0 && n_oi > 1))
-            && (r_overflow_no_tail > 0) && (l_overflow > 0);
-    if (large_code_size) {
-        const int max_code_size = 24 * 1024;
-        const int num_ops_per_reg = 6 + jcp.oc_block * jcp.kw;
-        int mult = 1;
-        if (l_overflow > 0) mult += 1;
-        if (r_overflow_no_tail > 0) mult += 1;
-        for (int ur_w = jcp.ur_w; ur_w > regs / 2; --ur_w) {
-            if ((ur_w / jcp.stride_w) * mult * num_ops_per_reg * 9.2
-                    < max_code_size) {
-                if (ur_w % jcp.stride_w == 0) {
-                    jcp.ur_w = ur_w;
-                    break;
-                }
-            }
-        }
-    }
-
     /* Support for large filter 'kw > 14' is only possible when ur_w is small
      * (e.g ur_w = 1) because of register allocation (max_reg = 31) */
     const int min_filter_size = 14;
@@ -2258,12 +2242,22 @@ status_t jit_aarch64_sve_512_conv_bwd_data_kernel_f32::init_conf(
             && utils::everyone_is(0, jcp.dilate_d, jcp.dilate_h, jcp.dilate_w);
 
     int try_nb_ic_blocking = 2;
+    /*
+     * kw != 1 and ( kw != 5 or iw >= 8 )
+     * and ( kw >= 5 or ( iw > 5 and ( iw <= 8 or iw > 13 )))
+     * 
+     * or
+     * stride_h > 1
+     * or 
+     * stride_d > 1
+     * */
     bool use_expl_bcast
             = !(jcp.kw == 1 || (jcp.kw == 5 && jcp.iw < 8)
                       || (jcp.kw < 5
                               && ((jcp.iw <= 5
                                       || (jcp.iw > 8 && jcp.iw <= 13)))))
             || jcp.stride_h > 1 || jcp.stride_d > 1;
+
     if (use_expl_bcast && !jcp.large_w_filter) {
         jcp.kernel_kind = embd_bcast;
         jcp.ur_w = nstl::min(jcp.iw, 16);
