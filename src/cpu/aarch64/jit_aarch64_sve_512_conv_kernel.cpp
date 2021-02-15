@@ -1372,9 +1372,10 @@ void _jit_aarch64_sve_512_conv_bwd_data_kernel_f32<Vmm>::compute_loop_fma(
 
     auto bcast_load = [&](int aux_output_offset, int prev_ofs, int idx) {
         int num_used_zreg = ker_reg_base_idx + ker_pipeline_depth;
-        int zreg_idx = (idx % (32 - num_used_zreg)) + num_used_zreg;
-        if (((aux_output_offset & 0x3) == 0) && (aux_output_offset < LDRWMAX)
-                && (aux_output_offset >= 0)) {
+        int zreg_idx
+                = (idx % (cpu_isa_traits<sve_512>::n_vregs - num_used_zreg))
+                + num_used_zreg;
+        if (ld1rw_imm_check(aux_output_offset)) {
             ld1rw(ZRegS(zreg_idx), reg_p_all_ones,
                     Xbyak_aarch64::ptr(aux_reg_dst,
                             static_cast<int32_t>(aux_output_offset)));
@@ -1382,17 +1383,15 @@ void _jit_aarch64_sve_512_conv_bwd_data_kernel_f32<Vmm>::compute_loop_fma(
             int ofs = aux_output_offset - prev_ofs;
             int ofs2 = aux_output_offset - (prev_ofs + 0x100);
             int ofs3 = aux_output_offset - (prev_ofs + 0x200);
-            if (((ofs & 0x3) == 0) && (ofs < LDRWMAX) && (ofs >= 0)) {
+            if (ld1rw_imm_check(ofs) && (prev_ofs != 0)) {
                 ld1rw(ZRegS(zreg_idx), reg_p_all_ones,
                         Xbyak_aarch64::ptr(reg_prev_bcast_addr,
                                 static_cast<int32_t>(ofs)));
-            } else if (((ofs2 & 0x3) == 0) && (ofs2 < LDRWMAX) && (ofs2 >= 0)
-                    && (prev_ofs != 0)) {
+            } else if (ld1rw_imm_check(ofs2) && (prev_ofs != 0)) {
                 ld1rw(ZRegS(zreg_idx), reg_p_all_ones,
                         Xbyak_aarch64::ptr(reg_prev_bcast_addr2,
                                 static_cast<int32_t>(ofs2)));
-            } else if (((ofs3 & 0x3) == 0) && (ofs3 < LDRWMAX) && (ofs3 >= 0)
-                    && (prev_ofs != 0)) {
+            } else if (ld1rw_imm_check(ofs3) && (prev_ofs != 0)) {
                 ld1rw(ZRegS(zreg_idx), reg_p_all_ones,
                         Xbyak_aarch64::ptr(reg_prev_bcast_addr3,
                                 static_cast<int32_t>(ofs3)));
@@ -1414,8 +1413,7 @@ void _jit_aarch64_sve_512_conv_bwd_data_kernel_f32<Vmm>::compute_loop_fma(
     auto ker_load = [=](int i, int aux_kernel_offset) {
         int ofs = aux_kernel_offset;
 
-        if ((VL_OFS(ofs) < LDRMAX) && (VL_OFS(ofs) >= (-1 * LDRMAX))
-                && ((ofs & 0x3f) == 0)) {
+        if (ldr_imm_check(ofs)) {
             ldr(zreg_ker(i),
                     Xbyak_aarch64::ptr(
                             aux_reg_ker, static_cast<int32_t>(VL_OFS(ofs))));
