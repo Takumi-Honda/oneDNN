@@ -25,13 +25,8 @@
 #include "cpu/aarch64/jit_primitive_conf.hpp"
 
 #include "cpu/aarch64/injectors/jit_uni_eltwise_injector.hpp"
+#include "cpu/aarch64/jit_op_imm_check.hpp"
 
-#define PRFWMAX 31
-#define LDRMAX 255
-#define LDRWMAX 252
-#define ADDMAX 4095
-#define PRFMMAX 32760
-#define MOVMAX 65535
 /* Get vector offsets, ofs / VL(VL: 512bits = 64Bytes) */
 #define VL_OFS(ofs) ((ofs) >> 6)
 

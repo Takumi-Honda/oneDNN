@@ -25,11 +25,7 @@
 #include "cpu/aarch64/jit_aarch64_sve_512_conv_kernel.hpp"
 #include "cpu/platform.hpp"
 
-#include "cpu/aarch64/jit_op_imm_check.hpp"
-
 #define GET_OFF(field) static_cast<int32_t>(offsetof(jit_conv_call_s, field))
-#define KNx_L2_EFFECTIVE_CAPACITY ((512 - 64) * 1024)
-#define A64FX_L2_EFFECTIVE_CAPACITY ((666 - 128) * 1024)
 
 namespace dnnl {
 namespace impl {
@@ -1242,16 +1238,14 @@ void _jit_aarch64_sve_512_conv_bwd_data_kernel_f32<Vmm>::store_output(
 
     auto out_load = [=](int aux_output_offset, int idx, int prev_ofs) {
         int ofs = aux_output_offset;
-        if ((VL_OFS(ofs) < LDRMAX) && (VL_OFS(ofs) >= (-1 * LDRMAX))
-                && ((ofs & 0x3f) == 0)) {
+        if (ldr_imm_check(ofs)) {
             ldr(zreg_tmp(idx),
                     Xbyak_aarch64::ptr(
                             reg_src, static_cast<int32_t>(VL_OFS(ofs))));
         } else {
             int tmp_ofs = aux_output_offset - prev_ofs;
 
-            if (((tmp_ofs & 0x3f) == 0) && (VL_OFS(tmp_ofs) < LDRWMAX)
-                    && (tmp_ofs >= 0)) {
+            if (ldr_imm_check(tmp_ofs)) {
                 ldr(zreg_tmp(idx),
                         Xbyak_aarch64::ptr(reg_tmp_addr,
                                 static_cast<int32_t>(VL_OFS(tmp_ofs))));
@@ -1267,16 +1261,14 @@ void _jit_aarch64_sve_512_conv_bwd_data_kernel_f32<Vmm>::store_output(
     auto out_str = [=](int j, int k, int aux_output_offset, int prev_ofs) {
         int ofs = aux_output_offset;
 
-        if ((VL_OFS(ofs) < LDRMAX) && (VL_OFS(ofs) >= (-1 * LDRMAX))
-                && ((ofs & 0x3f) == 0)) {
+        if (str_imm_check(ofs)) {
             str(zreg_out(j, k),
                     Xbyak_aarch64::ptr(
                             reg_src, static_cast<int32_t>(VL_OFS(ofs))));
         } else {
             int tmp_ofs = aux_output_offset - prev_ofs;
 
-            if (((tmp_ofs & 0x3f) == 0) && (VL_OFS(tmp_ofs) < LDRWMAX)
-                    && (tmp_ofs >= 0)) {
+            if (str_imm_check(tmp_ofs)) {
                 str(zreg_out(j, k),
                         Xbyak_aarch64::ptr(reg_tmp_addr,
                                 static_cast<int32_t>(VL_OFS(tmp_ofs))));
@@ -1342,7 +1334,7 @@ void _jit_aarch64_sve_512_conv_bwd_data_kernel_f32<Vmm>::compute_loop_fma(
     int stride_w = jcp.stride_w;
     int stride_h = jcp.stride_h;
 
-    int ker_pipeline_depth = 2;
+    int ker_pipeline_depth = 1;
     assert(ker_reg_base_idx + ker_pipeline_depth <= 31);
     assert(oc_block >= ker_pipeline_depth);
 
@@ -1491,8 +1483,8 @@ void _jit_aarch64_sve_512_conv_bwd_data_kernel_f32<Vmm>::compute_loop_fma(
                                                 0, r_overflow - ki * dilate_w));
 
                 int bcast_idx = 0;
-                int bcast_pipeline_depth
-                        = 32 - (ker_reg_base_idx + ker_pipeline_depth);
+                int bcast_pipeline_depth = cpu_isa_traits<sve_512>::n_vregs
+                        - (ker_reg_base_idx + ker_pipeline_depth);
                 int num_bcast_pipeline = nstl::min(
                         ((jj_end - jj_start) / stride_w), bcast_pipeline_depth);
                 for (int jj = jj_start; jj < jj_end; jj += stride_w) {
