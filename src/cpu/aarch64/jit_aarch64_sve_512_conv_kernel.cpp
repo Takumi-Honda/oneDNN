@@ -1334,7 +1334,7 @@ void _jit_aarch64_sve_512_conv_bwd_data_kernel_f32<Vmm>::compute_loop_fma(
     int stride_w = jcp.stride_w;
     int stride_h = jcp.stride_h;
 
-    int ker_pipeline_depth = 1;
+    int ker_pipeline_depth = 2;
     assert(ker_reg_base_idx + ker_pipeline_depth
             < cpu_isa_traits<sve_512>::n_vregs);
     assert(oc_block >= ker_pipeline_depth);
@@ -2260,7 +2260,7 @@ status_t jit_aarch64_sve_512_conv_bwd_data_kernel_f32::init_conf(
 
     if (use_expl_bcast && !jcp.large_w_filter) {
         jcp.kernel_kind = embd_bcast;
-        jcp.ur_w = nstl::min(jcp.iw, 16);
+        jcp.ur_w = nstl::min(jcp.iw, 15);
         jcp.nb_ic_blocking = jcp.nb_oc_blocking = 1;
         if (!(jcp.kw > 3 || (jcp.kw == 3 && jcp.ow > 8)) && jcp.stride_h == 1
                 && jcp.stride_d == 1)
