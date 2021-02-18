@@ -550,7 +550,6 @@ private:
     reg64_t reg_addr_diff_input = x28;
 
     const PReg reg_p_all_ones = p3;
-    const PReg reg_p_vl8 = p4;
 
     void prefetch(
             const std::string prfop, int level, reg64_t in, long long int ofs) {

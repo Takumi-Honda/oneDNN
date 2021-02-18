@@ -2658,23 +2658,14 @@ void jit_aarch64_sve_512_conv_bwd_weights_kernel_f32::compute_ic_block_step(
                  */
                 int pre_loaded_ic = 0;
                 if (pre_loaded_ur == 0) {
-                    if (ic_block_step == 8) {
+                    for (int i_ic = 0; i_ic < ic_block_step; i_ic++) {
+                        if ((idata_reg_offset + i_ic) > 31) break;
                         size_t i_offset
-                                = get_full_src_offset(i_iw, 0, input_offset);
-                        add_imm(reg_pre_addr_input, reg_input, i_offset,
-                                reg_tmp_imm);
-                        xa_->ld1w(ZRegS(31), reg_p_vl8.s,
-                                Xbyak_aarch64::ptr(reg_pre_addr_input));
-                    } else {
-                        for (int i_ic = 0; i_ic < ic_block_step; i_ic++) {
-                            if ((idata_reg_offset + i_ic) > 31) break;
-                            size_t i_offset = get_full_src_offset(
-                                    i_iw, i_ic, input_offset);
-                            int zreg_idx
-                                    = i_ic + (i_ur * kw + i_kw) * ic_block_step;
-                            load_input(i_offset, zreg_idx);
-                            pre_loaded_ic++;
-                        }
+                                = get_full_src_offset(i_iw, i_ic, input_offset);
+                        int zreg_idx
+                                = i_ic + (i_ur * kw + i_kw) * ic_block_step;
+                        load_input(i_offset, zreg_idx);
+                        pre_loaded_ic++;
                     }
                 }
 
@@ -2683,24 +2674,12 @@ void jit_aarch64_sve_512_conv_bwd_weights_kernel_f32::compute_ic_block_step(
                     assert((kw * ic_block_step + (i_ur % num_zregs4out)) < 31);
                     int zreg_idx = i_ic + (i_ur * kw + i_kw) * ic_block_step;
 
-                    if (ic_block_step == 8) {
-                        xa_->dup(ZRegS(idata_reg_offset
-                                         + (zreg_idx % (num_zregs4idata - 1))),
-                                ZRegS(31)[i_ic]);
-                        fmla(ZRegS(i_kw * ic_block_step + i_ic), reg_p_all_ones,
-                                ZRegS(kw * ic_block_step
-                                        + i_ur % num_zregs4out),
-                                ZRegS(idata_reg_offset
-                                        + (zreg_idx % (num_zregs4idata - 1))));
-                    } else {
-                        fmla(ZRegS(i_kw * ic_block_step + i_ic), reg_p_all_ones,
-                                ZRegS(kw * ic_block_step
-                                        + i_ur % num_zregs4out),
-                                ZRegS(idata_reg_offset
-                                        + (zreg_idx % num_zregs4idata)));
-                    }
+                    fmla(ZRegS(i_kw * ic_block_step + i_ic), reg_p_all_ones,
+                            ZRegS(kw * ic_block_step + i_ur % num_zregs4out),
+                            ZRegS(idata_reg_offset
+                                    + (zreg_idx % num_zregs4idata)));
 
-                    if ((pre_loaded_ur == 0 && ic_block_step != 8)
+                    if ((pre_loaded_ur == 0)
                             && ((i_ic + pre_loaded_ic) < ic_block_step)) {
                         size_t i_offset = get_full_src_offset(
                                 i_iw, i_ic + pre_loaded_ic, input_offset);
@@ -3923,7 +3902,6 @@ void jit_aarch64_sve_512_conv_bwd_weights_kernel_f32::compute_loop() {
 void jit_aarch64_sve_512_conv_bwd_weights_kernel_f32::generate_kernel() {
     preamble(true);
     ptrue(reg_p_all_ones.b);
-    ptrue(reg_p_vl8.s, VL8);
 
     ldr(reg_input, Xbyak_aarch64::ptr(param, GET_OFF(src)));
     ldr(reg_output, Xbyak_aarch64::ptr(param, GET_OFF(dst)));
